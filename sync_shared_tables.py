@@ -20,7 +20,6 @@
 #   -num_exec: the number of threads to spawn in the ThreadPoolExecutor.
 #   -target_share_id: the sharing identifier of the secondary metastore.
 
-import sys
 import time
 import pandas as pd
 from itertools import repeat
@@ -113,8 +112,7 @@ except BadRequest:
         recipient = [r for r in w_source.recipients.list() if r.data_recipient_global_metastore_id == metastore_id][0]
         print(f"Recipient with id {metastore_id} already exists. Skipping creation...")
     except IndexError:
-        print(f"Recipient with id {metastore_id} does not exist in source workspace. Please validate the id and create it manually.")
-        sys.exit()
+        raise RuntimeError(f"Recipient with id {metastore_id} does not exist in source workspace. Please validate the id and create it manually.")
 
 # get all tables in the primary metastore
 system_info = spark.sql("SELECT * FROM system.information_schema.tables")
@@ -127,8 +125,7 @@ try:
     remote_provider_name = [p.name for p in w_target.providers.list() if
                             p.data_provider_global_metastore_id == local_metastore_id][0]
 except IndexError:
-    print("Provider could not be found in target workspace; please check that it was created.")
-    sys.exit()
+    raise RuntimeError("Provider could not be found in target workspace; please check that it was created.")
 
 # initalize df lists
 cloned_table_names = []
@@ -137,83 +134,91 @@ cloned_table_catalogs = []
 cloned_table_status = []
 cloned_table_times = []
 
-# iterate through all catalogs to share
-for cat in catalogs_to_copy:
-    filtered_tables = system_info.filter(
-        (system_info.table_catalog == cat) &
-        (system_info.table_schema != "information_schema") &
-        (system_info.table_type != "VIEW")).distinct().collect()
+try:
+    # iterate through all catalogs to share
+    for cat in catalogs_to_copy:
+        filtered_tables = system_info.filter(
+            (system_info.table_catalog == cat) &
+            (system_info.table_schema != "information_schema") &
+            (system_info.table_type != "VIEW")).distinct().collect()
 
-    unique_schemas = {row['table_schema'] for row in filtered_tables}
-    all_tables = [row["table_name"] for row in filtered_tables]
-    all_schemas = [row["table_schema"] for row in filtered_tables]
+        unique_schemas = {row['table_schema'] for row in filtered_tables}
+        all_tables = [row["table_name"] for row in filtered_tables]
+        all_schemas = [row["table_schema"] for row in filtered_tables]
 
-    # create the share for the current catalog and update permissions
-    print(f"Creating share for catalog {cat}...")
+        # create the share for the current catalog and update permissions
+        print(f"Creating share for catalog {cat}...")
+        try:
+            share = w_source.shares.create(name=f"{cat}_share")
+            share_name = share.name
+        except BadRequest:
+            print(f"Share {cat}_share already exists. Skipping creation...")
+            share_name = f"{cat}_share"
+
+        try:
+            _ = w_source.shares.update_permissions(share_name,
+                                                   changes=[PermissionsChange(add=[Privilege.SELECT],
+                                                                              principal=recipient.name)])
+        except BadRequest:
+            print(f"Could not update permissions for share {share_name}.")
+
+        # build update object with all schemas in the current catalog
+        updates = [
+            SharedDataObjectUpdate(action=SharedDataObjectUpdateAction.ADD,
+                                   data_object=SharedDataObject(name=f"{cat}.{schema}",
+                                                                data_object_type=SharedDataObjectDataObjectType.SCHEMA,
+                                                                status=SharedDataObjectStatus.ACTIVE))
+            for schema in unique_schemas]
+
+        # update the share
+        try:
+            _ = w_source.shares.update(share_name, updates=updates)
+        except Exception as e:
+            print(f"Error updating share {share_name}: {e}")
+
+        # create the shared catalog in the target workspace
+        try:
+            _ = w_target.catalogs.create(name=f"{cat}_share", provider_name=remote_provider_name, share_name=share_name)
+        except BadRequest:
+            print(f"Shared catalog {cat}_share already exists. Skipping creation.")
+
+        with ThreadPoolExecutor(max_workers=num_exec) as executor:
+            threads = executor.map(clone_table,
+                                   repeat(w_target),
+                                   repeat(f"{cat}_share"),
+                                   repeat(cat),
+                                   all_schemas,
+                                   all_tables,
+                                   repeat(wh_target.id))
+
+            for thread in threads:
+                cloned_table_names.append(thread["table_name"])
+                cloned_table_schemas.append(thread["schema"])
+                cloned_table_catalogs.append(thread["catalog"])
+                cloned_table_status.append(thread["status"])
+                cloned_table_times.append(thread["creation_time"])
+
+                if thread["status"] == "SUCCESS":
+                    print("Loaded table {}.{}.{}.".format(thread["catalog"], thread["schema"], thread["table_name"]))
+
+    # create the table statuses as a df and write to a table in dr target
+    status_df = pd.DataFrame({"catalog": cloned_table_catalogs,
+                              "schema": cloned_table_schemas,
+                              "table": cloned_table_names,
+                              "status": cloned_table_status,
+                              "sync_time": cloned_table_times})
+
+    # table will get a specific timestamp-based location per run
+    if write_results:
+        ts2 = time.time_ns()
+        (spark.createDataFrame(status_df)
+         .write.mode("overwrite")
+         .format("delta")
+         .save(f"{landing_zone_url}/sync_status_{ts2}"))
+
+finally:
     try:
-        share = w_source.shares.create(name=f"{cat}_share")
-        share_name = share.name
-    except BadRequest:
-        print(f"Share {cat}_share already exists. Skipping creation...")
-        share_name = f"{cat}_share"
-
-    try:
-        _ = w_source.shares.update_permissions(share_name,
-                                               changes=[PermissionsChange(add=[Privilege.SELECT],
-                                                                          principal=recipient.name)])
-    except BadRequest:
-        print(f"Could not update permissions for share {share_name}.")
-
-    # build update object with all schemas in the current catalog
-    updates = [
-        SharedDataObjectUpdate(action=SharedDataObjectUpdateAction.ADD,
-                               data_object=SharedDataObject(name=f"{cat}.{schema}",
-                                                            data_object_type=SharedDataObjectDataObjectType.SCHEMA,
-                                                            status=SharedDataObjectStatus.ACTIVE))
-        for schema in unique_schemas]
-
-    # update the share
-    try:
-        _ = w_source.shares.update(share_name, updates=updates)
+        w_target.warehouses.delete(wh_target.id)
+        print(f"Cleaned up warehouse {wh_target.id}")
     except Exception as e:
-        print(f"Error updating share {share_name}: {e}")
-
-    # create the shared catalog in the target workspace
-    try:
-        _ = w_target.catalogs.create(name=f"{cat}_share", provider_name=remote_provider_name, share_name=share_name)
-    except BadRequest:
-        print(f"Shared catalog {cat}_share already exists. Skipping creation.")
-
-    with ThreadPoolExecutor(max_workers=num_exec) as executor:
-        threads = executor.map(clone_table,
-                               repeat(w_target),
-                               repeat(f"{cat}_share"),
-                               repeat(cat),
-                               all_schemas,
-                               all_tables,
-                               repeat(wh_target.id))
-
-        for thread in threads:
-            cloned_table_names.append(thread["table_name"])
-            cloned_table_schemas.append(thread["schema"])
-            cloned_table_catalogs.append(thread["catalog"])
-            cloned_table_status.append(thread["status"])
-            cloned_table_times.append(thread["creation_time"])
-
-            if thread["status"] == "SUCCESS":
-                print("Loaded table {}.{}.{}.".format(thread["catalog"], thread["schema"], thread["table_name"]))
-
-# create the table statuses as a df and write to a table in dr target
-status_df = pd.DataFrame({"catalog": cloned_table_catalogs,
-                          "schema": cloned_table_schemas,
-                          "table": cloned_table_names,
-                          "status": cloned_table_status,
-                          "sync_time": cloned_table_times})
-
-# table will get a specific timestamp-based location per run
-if write_results:
-    ts2 = time.time_ns()
-    (spark.createDataFrame(status_df)
-     .write.mode("overwrite")
-     .format("delta")
-     .save(f"{landing_zone_url}/sync_status_{ts2}"))
+        print(f"Warning: could not delete warehouse {wh_target.id}: {e}")

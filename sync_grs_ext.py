@@ -141,64 +141,72 @@ wh_target = w_target.warehouses.create(name=f'sdk-{time.time_ns()}',
 
 system_info = spark.sql("SELECT * FROM system.information_schema.tables")
 
-# loop through all catalogs to copy, then copy all tables excluding system tables.
-# we also skip views; these need to be created separately since they cannot be cloned.
-for cat in catalogs_to_copy:
-    filtered_tables = system_info.filter(
-        (system_info.table_catalog == cat) &
-        (system_info.table_schema != "information_schema") &
-        (system_info.table_type == "EXTERNAL")).collect()
+try:
+    # loop through all catalogs to copy, then copy all tables excluding system tables.
+    # we also skip views; these need to be created separately since they cannot be cloned.
+    for cat in catalogs_to_copy:
+        filtered_tables = system_info.filter(
+            (system_info.table_catalog == cat) &
+            (system_info.table_schema != "information_schema") &
+            (system_info.table_type == "EXTERNAL")).collect()
 
-    # get schemas, tables and types in list form
-    schemas = [row['table_schema'] for row in filtered_tables]
-    table_names = [row['table_name'] for row in filtered_tables]
-    table_locs = [row['storage_path'] for row in filtered_tables]
+        # get schemas, tables and types in list form
+        schemas = [row['table_schema'] for row in filtered_tables]
+        table_names = [row['table_name'] for row in filtered_tables]
+        table_locs = [row['storage_path'] for row in filtered_tables]
 
-    with ThreadPoolExecutor(max_workers=num_exec) as executor:
-        threads = executor.map(drop_table,
-                               repeat(w_target),
-                               repeat(cat),
-                               schemas,
-                               table_names,
-                               repeat(wh_target.id))
+        with ThreadPoolExecutor(max_workers=num_exec) as executor:
+            threads = executor.map(drop_table,
+                                   repeat(w_target),
+                                   repeat(cat),
+                                   schemas,
+                                   table_names,
+                                   repeat(wh_target.id))
 
-        for thread in threads:
-            if thread["status"]:
-                print("Dropped table {}.{}.{}.".format(thread["catalog"], thread["schema"], thread["table_name"]))
-            else:
-                print(
-                    "Error dropping table {}.{}.{}.".format(thread["catalog"], thread["schema"], thread["table_name"]))
+            for thread in threads:
+                if thread["status"]:
+                    print("Dropped table {}.{}.{}.".format(thread["catalog"], thread["schema"], thread["table_name"]))
+                else:
+                    print(
+                        "Error dropping table {}.{}.{}.".format(thread["catalog"], thread["schema"], thread["table_name"]))
 
-    # use ThreadPool to copy tables in parallel
-    with ThreadPoolExecutor(max_workers=num_exec) as executor:
-        threads = executor.map(load_table,
-                               repeat(w_target),
-                               repeat(cat),
-                               schemas,
-                               table_names,
-                               table_locs,
-                               repeat(wh_target.id))
+        # use ThreadPool to copy tables in parallel
+        with ThreadPoolExecutor(max_workers=num_exec) as executor:
+            threads = executor.map(load_table,
+                                   repeat(w_target),
+                                   repeat(cat),
+                                   schemas,
+                                   table_names,
+                                   table_locs,
+                                   repeat(wh_target.id))
 
-        # wait for threads to execute and build lists for status table
-        for thread in threads:
-            loaded_table_names.append(thread["table_name"])
-            loaded_table_schemas.append(thread["schema"])
-            loaded_table_catalogs.append(thread["catalog"])
-            loaded_table_locations.append(thread["location"])
-            loaded_table_status.append(thread["status"])
-            loaded_table_times.append(thread["creation_time"])
-            print("Loaded table {}.{}.{}.".format(thread["catalog"], thread["schema"], thread["table_name"]))
+            # wait for threads to execute and build lists for status table
+            for thread in threads:
+                loaded_table_names.append(thread["table_name"])
+                loaded_table_schemas.append(thread["schema"])
+                loaded_table_catalogs.append(thread["catalog"])
+                loaded_table_locations.append(thread["location"])
+                loaded_table_status.append(thread["status"])
+                loaded_table_times.append(thread["creation_time"])
+                print("Loaded table {}.{}.{}.".format(thread["catalog"], thread["schema"], thread["table_name"]))
 
-# create the table statuses as a df and write to a table in dr target
-status_df = pd.DataFrame({"catalog": loaded_table_catalogs,
-                          "schema": loaded_table_schemas,
-                          "table": loaded_table_names,
-                          "location": loaded_table_locations,
-                          "status": loaded_table_status,
-                          "create_time": loaded_table_times})
+    # create the table statuses as a df and write to a table in dr target
+    status_df = pd.DataFrame({"catalog": loaded_table_catalogs,
+                              "schema": loaded_table_schemas,
+                              "table": loaded_table_names,
+                              "location": loaded_table_locations,
+                              "status": loaded_table_status,
+                              "create_time": loaded_table_times})
 
-# table will get a specific timestamp-based location per run
-(spark.createDataFrame(status_df)
- .write.mode("overwrite")
- .format("delta")
- .save(f"{landing_zone_url}/sync_status_{time.time_ns()}"))
+    # table will get a specific timestamp-based location per run
+    (spark.createDataFrame(status_df)
+     .write.mode("overwrite")
+     .format("delta")
+     .save(f"{landing_zone_url}/sync_status_{time.time_ns()}"))
+
+finally:
+    try:
+        w_target.warehouses.delete(wh_target.id)
+        print(f"Cleaned up warehouse {wh_target.id}")
+    except Exception as e:
+        print(f"Warning: could not delete warehouse {wh_target.id}: {e}")

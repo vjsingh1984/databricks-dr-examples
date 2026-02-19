@@ -105,42 +105,50 @@ loaded_view_catalogs = []
 loaded_view_status = []
 loaded_view_times = []
 
-# load all views per catalog
-for cat in catalogs_to_copy:
-    filtered_views = all_views.filter(
-        (all_views.table_catalog == cat) &
-        (all_views.table_schema != "information_schema")).collect()
+try:
+    # load all views per catalog
+    for cat in catalogs_to_copy:
+        filtered_views = all_views.filter(
+            (all_views.table_catalog == cat) &
+            (all_views.table_schema != "information_schema")).collect()
 
-    # get schemas and view names
-    schemas = [row['table_schema'] for row in filtered_views]
-    view_names = [row['table_name'] for row in filtered_views]
+        # get schemas and view names
+        schemas = [row['table_schema'] for row in filtered_views]
+        view_names = [row['table_name'] for row in filtered_views]
 
-    with ThreadPoolExecutor(max_workers=num_exec) as executor:
-        threads = executor.map(create_view,
-                               repeat(w_target),
-                               repeat(cat),
-                               schemas,
-                               view_names,
-                               repeat(wh_target.id))
+        with ThreadPoolExecutor(max_workers=num_exec) as executor:
+            threads = executor.map(create_view,
+                                   repeat(w_target),
+                                   repeat(cat),
+                                   schemas,
+                                   view_names,
+                                   repeat(wh_target.id))
 
-        for thread in threads:
-            loaded_view_names.append(thread["view_name"])
-            loaded_view_schemas.append(thread["schema"])
-            loaded_view_catalogs.append(thread["catalog"])
-            loaded_view_status.append(thread["status"])
-            loaded_view_times.append(thread["creation_time"])
-            print("Loaded view {}.{}.{}.".format(thread["catalog"], thread["schema"], thread["view_name"]))
+            for thread in threads:
+                loaded_view_names.append(thread["view_name"])
+                loaded_view_schemas.append(thread["schema"])
+                loaded_view_catalogs.append(thread["catalog"])
+                loaded_view_status.append(thread["status"])
+                loaded_view_times.append(thread["creation_time"])
+                print("Loaded view {}.{}.{}.".format(thread["catalog"], thread["schema"], thread["view_name"]))
 
-# create the table statuses as a df and write to a table in dr target
-status_df = pd.DataFrame({"catalog": loaded_view_catalogs,
-                          "schema": loaded_view_schemas,
-                          "table": loaded_view_names,
-                          "status": loaded_view_status,
-                          "sync_time": loaded_view_times})
+    # create the table statuses as a df and write to a table in dr target
+    status_df = pd.DataFrame({"catalog": loaded_view_catalogs,
+                              "schema": loaded_view_schemas,
+                              "table": loaded_view_names,
+                              "status": loaded_view_status,
+                              "sync_time": loaded_view_times})
 
-# table will get a specific timestamp-based location per run
-ts = time.time_ns()
-(spark.createDataFrame(status_df)
- .write.mode("overwrite")
- .format("delta")
- .save(f"{landing_zone_url}/view_sync_status_{ts}"))
+    # table will get a specific timestamp-based location per run
+    ts = time.time_ns()
+    (spark.createDataFrame(status_df)
+     .write.mode("overwrite")
+     .format("delta")
+     .save(f"{landing_zone_url}/view_sync_status_{ts}"))
+
+finally:
+    try:
+        w_target.warehouses.delete(wh_target.id)
+        print(f"Cleaned up warehouse {wh_target.id}")
+    except Exception as e:
+        print(f"Warning: could not delete warehouse {wh_target.id}: {e}")
