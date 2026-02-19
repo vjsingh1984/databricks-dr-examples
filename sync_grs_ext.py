@@ -91,15 +91,16 @@ loaded_table_times = []
 # create the WorkspaceClient pointed at the target WS
 w_target = WorkspaceClient(host=target_host, token=target_pat)
 
-system_info = spark.sql("SELECT * FROM system.information_schema.tables")
-
 if config.dry_run:
     # In dry-run mode, log what would happen without creating warehouses or executing SQL
     for cat in catalogs_to_copy:
-        filtered_tables = system_info.filter(
-            (system_info.table_catalog == cat) &
-            (system_info.table_schema != "information_schema") &
-            (system_info.table_type == "EXTERNAL")).collect()
+        filtered_tables = spark.sql(f"""
+            SELECT table_schema, table_name, storage_path
+            FROM system.information_schema.tables
+            WHERE table_catalog = '{cat}'
+              AND table_schema != 'information_schema'
+              AND table_type = 'EXTERNAL'
+        """).collect()
 
         schemas = [row['table_schema'] for row in filtered_tables]
         table_names = [row['table_name'] for row in filtered_tables]
@@ -114,10 +115,13 @@ else:
         # loop through all catalogs to copy, then copy all tables excluding system tables.
         # we also skip views; these need to be created separately since they cannot be cloned.
         for cat in catalogs_to_copy:
-            filtered_tables = system_info.filter(
-                (system_info.table_catalog == cat) &
-                (system_info.table_schema != "information_schema") &
-                (system_info.table_type == "EXTERNAL")).collect()
+            filtered_tables = spark.sql(f"""
+                SELECT table_schema, table_name, storage_path
+                FROM system.information_schema.tables
+                WHERE table_catalog = '{cat}'
+                  AND table_schema != 'information_schema'
+                  AND table_type = 'EXTERNAL'
+            """).collect()
 
             # get schemas, tables and types in list form
             schemas = [row['table_schema'] for row in filtered_tables]

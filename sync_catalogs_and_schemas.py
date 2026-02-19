@@ -18,8 +18,10 @@
 import argparse
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
+from itertools import repeat
 from databricks.sdk import WorkspaceClient
-from dr_sync.csv_mapping import load_mapping, lookup_value
+from dr_sync.csv_mapping import load_mapping
 from dr_sync.config import DRSyncConfig
 from dr_sync.log import setup_logging
 
@@ -49,6 +51,7 @@ target_catalog_names = [x.name for x in target_catalogs]
 catalog_diff = list(set(source_catalog_names) - set(target_catalog_names))
 catalogs_to_create = [x for x in source_catalogs if x.name in catalog_diff]
 catalog_df = load_mapping(catalog_mapping_file)
+catalog_lookup = catalog_df.set_index('source_catalog').to_dict('index')
 
 if not catalogs_to_create:
     logger.info("All source catalogs exist in target metastore.")
@@ -71,10 +74,11 @@ for catalog in catalogs_to_create:
     logger.info("Creating catalog %s...", catalog_name)
 
     # get target storage root based off of catalog name
-    storage_root = lookup_value(catalog_df, 'source_catalog', catalog_name, 'target_storage_root')
-    if storage_root is None:
+    row = catalog_lookup.get(catalog_name)
+    if row is None:
         logger.error("Could not create catalog %s. Please check mapping file.", catalog_name)
         continue
+    storage_root = row['target_storage_root']
 
     # create catalog in target metastore
     if config.dry_run:
@@ -96,48 +100,67 @@ for catalog in catalogs_to_create:
     logger.info("Created catalog %s.", catalog_name)
 
 schema_df = load_mapping(schema_mapping_file)
+# Build a lookup keyed by (source_catalog, source_schema) for O(1) access
+schema_lookup = {}
+for _, srow in schema_df.iterrows():
+    key = (srow['source_catalog'], srow['source_schema'])
+    schema_lookup[key] = srow.to_dict()
 
-for catalog in source_catalogs:
-    source_schemas = [x for x in w_source.schemas.list(catalog.name)]
-    target_schemas = [x for x in w_target.schemas.list(catalog.name)]
+
+def create_schema(catalog_name, schema_obj, storage_root):
+    """Create a single schema in the target workspace. Returns a status dict."""
+    schema_name = schema_obj.name
+    schema_comment = schema_obj.comment
+    schema_properties = schema_obj.properties
+
+    try:
+        if storage_root:
+            w_target.schemas.create(name=schema_name,
+                                    comment=schema_comment,
+                                    properties=schema_properties,
+                                    catalog_name=catalog_name,
+                                    storage_root=storage_root)
+        else:
+            w_target.schemas.create(name=schema_name,
+                                    comment=schema_comment,
+                                    properties=schema_properties,
+                                    catalog_name=catalog_name)
+        logger.info("Created schema %s.%s.", catalog_name, schema_name)
+    except Exception as e:
+        logger.error("Error creating schema %s.%s: %s", catalog_name, schema_name, e)
+
+
+# Collect all schema creation tasks across catalogs
+schema_tasks = []
+for cat in source_catalogs:
+    source_schemas = [x for x in w_source.schemas.list(cat.name)]
+    target_schemas = [x for x in w_target.schemas.list(cat.name)]
     source_schema_names = [x.name for x in source_schemas]
     target_schema_names = [x.name for x in target_schemas]
     schema_diff = list(set(source_schema_names) - set(target_schema_names))
     schemas_to_create = [x for x in source_schemas if x.name in schema_diff]
 
     for schema in schemas_to_create:
-        schema_name = schema.name
-        schema_comment = schema.comment
-        schema_properties = schema.properties
-
-        # filter for matching catalog and schema
-        filtered = schema_df[
-            (schema_df['source_schema'] == schema_name) &
-            (schema_df['source_catalog'] == catalog.name)
-        ]
-        if filtered.empty:
-            logger.error("Could not create schema %s.%s. Please check mapping file.", catalog.name, schema_name)
+        row = schema_lookup.get((cat.name, schema.name))
+        if row is None:
+            logger.error("Could not create schema %s.%s. Please check mapping file.", cat.name, schema.name)
             continue
 
-        storage_root = filtered['target_storage_root'].iloc[0]
+        storage_root = row['target_storage_root']
 
         if config.dry_run:
-            logger.info("[DRY RUN] Would create schema %s.%s", catalog.name, schema_name)
+            logger.info("[DRY RUN] Would create schema %s.%s", cat.name, schema.name)
             continue
 
-        if storage_root:
-            w_target.schemas.create(name=schema_name,
-                                    comment=schema_comment,
-                                    properties=schema_properties,
-                                    catalog_name=catalog.name,
-                                    storage_root=storage_root)
-        else:
-            w_target.schemas.create(name=schema_name,
-                                    comment=schema_comment,
-                                    properties=schema_properties,
-                                    catalog_name=catalog.name)
+        schema_tasks.append((cat.name, schema, storage_root))
 
-        logger.info("Created schema %s.%s.", catalog.name, schema_name)
+# Execute schema creation in parallel
+if schema_tasks:
+    catalog_names = [t[0] for t in schema_tasks]
+    schema_objs = [t[1] for t in schema_tasks]
+    storage_roots = [t[2] for t in schema_tasks]
+    with ThreadPoolExecutor(max_workers=config.num_exec) as executor:
+        list(executor.map(create_schema, catalog_names, schema_objs, storage_roots))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Sync catalogs and schemas between workspaces")

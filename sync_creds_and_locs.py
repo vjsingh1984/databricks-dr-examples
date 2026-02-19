@@ -28,7 +28,7 @@ import logging
 import os
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import catalog
-from dr_sync.csv_mapping import load_mapping, lookup_value
+from dr_sync.csv_mapping import load_mapping
 from dr_sync.config import DRSyncConfig
 from dr_sync.log import setup_logging
 
@@ -59,6 +59,7 @@ target_cred_names = [x.name for x in target_creds]
 cred_diff = list(set(source_cred_names) - set(target_cred_names))
 creds_to_create = [x for x in source_creds if x.name in cred_diff]
 cred_df = load_mapping(cred_mapping_file)
+cred_lookup = cred_df.set_index('source_cred_name').to_dict('index')
 
 if not creds_to_create:
     logger.info("All source credentials exist in target metastore.")
@@ -72,10 +73,11 @@ for cred in creds_to_create:
 
     if cloud_type == "aws":
         # get cred IAM role based off of name
-        iam_role_arn = lookup_value(cred_df, 'source_cred_name', cred_name, 'target_iam_role')
-        if iam_role_arn is None:
+        row = cred_lookup.get(cred_name)
+        if row is None:
             logger.error("Could not create credential %s. Please check mapping file.", cred_name)
             continue
+        iam_role_arn = row['target_iam_role']
 
         # create storage credential in target WS
         cred_iam_role = catalog.AwsIamRole(role_arn=iam_role_arn)
@@ -88,13 +90,17 @@ for cred in creds_to_create:
                                             aws_iam_role=cred_iam_role)
     elif cloud_type == "azure":
         # get SP and Mgd ID info based off of name
-        managed_id_connector = lookup_value(cred_df, 'source_cred_name', cred_name, 'target_mgd_id_connector')
-        managed_id_identity = lookup_value(cred_df, 'source_cred_name', cred_name, 'target_mgd_id_identity')
-        sp_directory = lookup_value(cred_df, 'source_cred_name', cred_name, 'target_sp_directory')
-        sp_appid = lookup_value(cred_df, 'source_cred_name', cred_name, 'target_sp_appid')
-        sp_secret = lookup_value(cred_df, 'source_cred_name', cred_name, 'target_sp_secret')
+        row = cred_lookup.get(cred_name)
+        if row is None:
+            logger.error("Could not create credential %s. Please check mapping file.", cred_name)
+            continue
+        managed_id_connector = row.get('target_mgd_id_connector', '')
+        managed_id_identity = row.get('target_mgd_id_identity', '')
+        sp_directory = row.get('target_sp_directory', '')
+        sp_appid = row.get('target_sp_appid', '')
+        sp_secret = row.get('target_sp_secret', '')
 
-        if managed_id_connector is None and managed_id_identity is None and sp_directory is None:
+        if not managed_id_connector and not managed_id_identity and not sp_directory:
             logger.error("Could not create credential %s. Please check mapping file.", cred_name)
             continue
 
@@ -144,6 +150,7 @@ target_extloc_names = [x.name for x in target_extloc]
 loc_diff = list(set(source_extloc_names) - set(target_extloc_names))
 locs_to_create = [x for x in source_extloc if x.name in loc_diff]
 loc_df = load_mapping(loc_mapping_file)
+loc_lookup = loc_df.set_index('source_loc_name').to_dict('index')
 
 if not locs_to_create:
     logger.info("All source external locations exist in target metastore.")
@@ -158,8 +165,12 @@ for loc in locs_to_create:
     logger.info("Creating external location %s...", loc_name)
 
     if cloud_type == "aws":
-        url = lookup_value(loc_df, 'source_loc_name', loc_name, 'target_url')
-        access_pt = lookup_value(loc_df, 'source_loc_name', loc_name, 'target_access_pt')
+        row = loc_lookup.get(loc_name)
+        if row is None:
+            logger.error("Could not create location %s. Please check mapping file.", loc_name)
+            continue
+        url = row['target_url']
+        access_pt = row.get('target_access_pt', '')
 
         if url is None:
             logger.error("Could not create location %s. Please check mapping file.", loc_name)
@@ -185,7 +196,11 @@ for loc in locs_to_create:
                                                read_only=loc_read_only,
                                                url=url)
     elif cloud_type == "azure":
-        url = lookup_value(loc_df, 'source_loc_name', loc_name, 'target_url')
+        row = loc_lookup.get(loc_name)
+        if row is None:
+            logger.error("Could not create location %s. Please check mapping file.", loc_name)
+            continue
+        url = row['target_url']
 
         if url is None:
             logger.error("Could not create location %s. Please check mapping file.", loc_name)
