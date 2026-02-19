@@ -10,7 +10,7 @@
 import pandas as pd
 
 # script inputs
-catalogs_to_copy = ["my_catalog1, my_catalog2"]
+catalogs_to_copy = ["my_catalog1", "my_catalog2"]
 dest_bucket = "s3://path/to/intermediate/location"
 manifest_name = "manifest"
 

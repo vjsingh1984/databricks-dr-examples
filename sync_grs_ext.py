@@ -110,7 +110,7 @@ def load_table(w, catalog, schema, table_name, location, warehouse):
                 "schema": schema,
                 "table_name": table_name,
                 "location": location,
-                "status": "FAIL: {e}",
+                "status": f"FAIL: {e}",
                 "creation_time": time.time_ns()}
 
 
@@ -119,7 +119,6 @@ wh_type = CreateWarehouseRequestWarehouseType("PRO")  # required for serverless 
 
 # initialize lists for status tracking
 loaded_table_names = []
-loaded_table_types = []
 loaded_table_schemas = []
 loaded_table_catalogs = []
 loaded_table_locations = []
@@ -195,7 +194,6 @@ status_df = pd.DataFrame({"catalog": loaded_table_catalogs,
                           "schema": loaded_table_schemas,
                           "table": loaded_table_names,
                           "location": loaded_table_locations,
-                          "type": loaded_table_types,
                           "status": loaded_table_status,
                           "create_time": loaded_table_times})
 

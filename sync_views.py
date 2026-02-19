@@ -1,4 +1,4 @@
-# sync_tables.py
+# sync_views.py
 #
 # *EXAMPLE* Script to sync views between workspaces. This will very likely need to be altered in your environment to
 # match the use cases, syntax styles, etc. that you use. Please do NOT expect this to work directly.
@@ -73,7 +73,7 @@ def create_view(w, catalog, schema, view_name, warehouse):
         return {"catalog": catalog,
                 "schema": schema,
                 "view_name": view_name,
-                f"status": f"FAIL: {e}",
+                "status": f"FAIL: {e}",
                 "creation_time": time.time_ns()}
 
 
@@ -109,7 +109,7 @@ loaded_view_times = []
 for cat in catalogs_to_copy:
     filtered_views = all_views.filter(
         (all_views.table_catalog == cat) &
-        all_views.table_schema != "information_schema").collect()
+        (all_views.table_schema != "information_schema")).collect()
 
     # get schemas and view names
     schemas = [row['table_schema'] for row in filtered_views]
