@@ -1,0 +1,61 @@
+# Agents
+.claude/
+.cursor/
+.copilot/
+.github/copilot-instructions.md
+.aider*
+.codeium/
+.tabnine/
+.sourcegraph/
+.cody/
+.victor/
+CLAUDE.md
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+.eggs/
+*.so
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Pre-commit
+.pre-commit-config.yaml
+scripts/
+
+# Logs and reports
+*.log
+*.out
+*.report
+*.summary

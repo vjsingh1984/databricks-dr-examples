@@ -17,14 +17,28 @@
 #   -catalogs_to_copy: a list of the catalogs to be replicated between workspaces.
 #   -num_exec: the number of threads to spawn in the ThreadPoolExecutor.
 
+import argparse
+import os
 from itertools import repeat
 from databricks.sdk.service import catalog
 from databricks.sdk import WorkspaceClient
 from concurrent.futures import ThreadPoolExecutor
 from databricks.sdk.errors.platform import NotFound
-from common import (target_pat, target_host,
-                    source_pat, source_host,
-                    catalogs_to_copy, num_exec)
+from dr_sync.config import DRSyncConfig
+from dr_sync.log import setup_logging
+
+config = (
+    DRSyncConfig.from_env()
+    if os.environ.get("DR_SYNC_SOURCE_HOST")
+    else DRSyncConfig.from_common_module()
+)
+logger = setup_logging()
+target_host = config.target_host
+target_pat = config.target_token
+source_host = config.source_host
+source_pat = config.source_token
+catalogs_to_copy = config.catalogs_to_copy
+num_exec = config.num_exec
 
 
 # helper function to update object grants between source and target WS
@@ -40,23 +54,36 @@ def sync_grants(w_src, w_tgt, obj_name, obj_type):
 
     # get list of all distinct users with grants on the object
     user_list = {u.principal for u in source_grants.privilege_assignments}.union(
-        {u.principal for u in target_grants.privilege_assignments})
+        {u.principal for u in target_grants.privilege_assignments}
+    )
 
     # create PermissionsChange object for each user where a change exists
     change_list = []
     for u in user_list:
         # get the source/target privileges; these may not exist in one or the other environment
         try:
-            source_privs = [x.privilege for x in
-                            [p.privileges for p in source_grants.privilege_assignments if p.principal == u][0]
-                            if x.privilege is not None]
+            source_privs = [
+                x.privilege
+                for x in [
+                    p.privileges
+                    for p in source_grants.privilege_assignments
+                    if p.principal == u
+                ][0]
+                if x.privilege is not None
+            ]
         except IndexError:
             source_privs = []
 
         try:
-            target_privs = [x.privilege for x in
-                            [p.privileges for p in target_grants.privilege_assignments if p.principal == u][0]
-                            if x.privilege is not None]
+            target_privs = [
+                x.privilege
+                for x in [
+                    p.privileges
+                    for p in target_grants.privilege_assignments
+                    if p.principal == u
+                ][0]
+                if x.privilege is not None
+            ]
         except IndexError:
             target_privs = []
 
@@ -65,24 +92,22 @@ def sync_grants(w_src, w_tgt, obj_name, obj_type):
 
         # for the change list based on which types of changes exist
         if add_perms and rem_perms:
-            change_list.append(catalog.PermissionsChange(
-                add=add_perms,
-                remove=rem_perms,
-                principal=u))
+            change_list.append(
+                catalog.PermissionsChange(add=add_perms, remove=rem_perms, principal=u)
+            )
         elif add_perms:
-            change_list.append(catalog.PermissionsChange(
-                add=add_perms,
-                principal=u))
+            change_list.append(catalog.PermissionsChange(add=add_perms, principal=u))
         elif rem_perms:
-            change_list.append(catalog.PermissionsChange(
-                remove=rem_perms,
-                principal=u))
+            change_list.append(catalog.PermissionsChange(remove=rem_perms, principal=u))
 
     # if any grants changed, update the object in target
     if change_list:
-        w_tgt.grants.update(full_name=obj_name,
-                            securable_type=obj_type,
-                            changes=change_list)
+        if config.dry_run:
+            logger.info("[DRY RUN] Would update grants for %s (%s)", obj_name, obj_type)
+            return {"name": obj_name, "status": "DRY_RUN"}
+        w_tgt.grants.update(
+            full_name=obj_name, securable_type=obj_type, changes=change_list
+        )
         return {"name": obj_name, "status": "SUCCESS"}
     else:
         return {"name": obj_name, "status": None}
@@ -99,8 +124,9 @@ volume_info = spark.sql("SELECT * FROM system.information_schema.volumes")
 # iterate through catalogs
 for cat in catalogs_to_copy:
     filtered_tables = table_info.filter(
-        (table_info.table_catalog == cat) &
-        (table_info.table_schema != "information_schema")).collect()
+        (table_info.table_catalog == cat)
+        & (table_info.table_schema != "information_schema")
+    ).collect()
 
     filtered_volumes = volume_info.filter(volume_info.volume_catalog == cat).collect()
 
@@ -108,68 +134,115 @@ for cat in catalogs_to_copy:
     res = sync_grants(w_source, w_target, cat, catalog.SecurableType.CATALOG)
 
     if res["status"] == "SUCCESS":
-        print(f"Synced grants for catalog {cat}.")
+        logger.info("Synced grants for catalog %s.", cat)
     elif res["status"] == "NotFound":
-        print(f"ERROR: catalog {cat} does not exist in target workspace. Sync metadata and re-run.")
+        logger.error(
+            "Catalog %s does not exist in target workspace. Sync metadata and re-run.",
+            cat,
+        )
     else:
-        print(f"No changes to sync for catalog {cat}.")
+        logger.info("No changes to sync for catalog %s.", cat)
 
     # get list of fully qualified schemas and tables
-    schemas = {f"{cat}.{schema}" for schema in [row['table_schema'] for row in filtered_tables]}
-    table_names = [f"{cat}.{schema}.{table}" for schema, table in
-                   zip([row['table_schema'] for row in filtered_tables],
-                       [row['table_name'] for row in filtered_tables])]
-    volume_names = [f"{cat}.{schema}.{table}" for schema, table in
-                    zip([row['volume_schema'] for row in filtered_volumes],
-                        [row['volume_name'] for row in filtered_volumes])]
+    schemas = {
+        f"{cat}.{schema}" for schema in [row["table_schema"] for row in filtered_tables]
+    }
+    table_names = [
+        f"{cat}.{schema}.{table}"
+        for schema, table in zip(
+            [row["table_schema"] for row in filtered_tables],
+            [row["table_name"] for row in filtered_tables],
+        )
+    ]
+    volume_names = [
+        f"{cat}.{schema}.{table}"
+        for schema, table in zip(
+            [row["volume_schema"] for row in filtered_volumes],
+            [row["volume_name"] for row in filtered_volumes],
+        )
+    ]
 
     # update schema grants in parallel
     with ThreadPoolExecutor(max_workers=num_exec) as executor:
-        threads = executor.map(sync_grants,
-                               repeat(w_source),
-                               repeat(w_target),
-                               schemas,
-                               repeat(catalog.SecurableType.SCHEMA))
+        threads = executor.map(
+            sync_grants,
+            repeat(w_source),
+            repeat(w_target),
+            schemas,
+            repeat(catalog.SecurableType.SCHEMA),
+        )
 
         for thread in threads:
             name = thread["name"]
             if thread["status"] == "SUCCESS":
-                print(f"Synced grants for schema {name}.")
+                logger.info("Synced grants for schema %s.", name)
             elif thread["status"] == "NotFound":
-                print(f"ERROR: schema {name} does not exist in target workspace. Sync metadata and re-run.")
+                logger.error(
+                    "Schema %s does not exist in target workspace. Sync metadata and re-run.",
+                    name,
+                )
             else:
-                print(f"No changes to sync for schema {name}.")
+                logger.info("No changes to sync for schema %s.", name)
 
     # update table grants in parallel
     with ThreadPoolExecutor(max_workers=num_exec) as executor:
-        threads = executor.map(sync_grants,
-                               repeat(w_source),
-                               repeat(w_target),
-                               table_names,
-                               repeat(catalog.SecurableType.TABLE))
+        threads = executor.map(
+            sync_grants,
+            repeat(w_source),
+            repeat(w_target),
+            table_names,
+            repeat(catalog.SecurableType.TABLE),
+        )
 
         for thread in threads:
             name = thread["name"]
             if thread["status"] == "SUCCESS":
-                print(f"Synced grants for table {name}.")
+                logger.info("Synced grants for table %s.", name)
             elif thread["status"] == "NotFound":
-                print(f"ERROR: table {name} does not exist in target workspace. Sync metadata and re-run.")
+                logger.error(
+                    "Table %s does not exist in target workspace. Sync metadata and re-run.",
+                    name,
+                )
             else:
-                print(f"No changes to sync for table {name}.")
+                logger.info("No changes to sync for table %s.", name)
 
     # update volume grants in parallel
     with ThreadPoolExecutor(max_workers=num_exec) as executor:
-        threads = executor.map(sync_grants,
-                               repeat(w_source),
-                               repeat(w_target),
-                               volume_names,
-                               repeat(catalog.SecurableType.VOLUME))
+        threads = executor.map(
+            sync_grants,
+            repeat(w_source),
+            repeat(w_target),
+            volume_names,
+            repeat(catalog.SecurableType.VOLUME),
+        )
 
         for thread in threads:
             name = thread["name"]
             if thread["status"] == "SUCCESS":
-                print(f"Synced grants for volume {name}.")
+                logger.info("Synced grants for volume %s.", name)
             elif thread["status"] == "NotFound":
-                print(f"ERROR: volume {name} does not exist in target workspace. Sync volumes and re-run.")
+                logger.error(
+                    "Volume %s does not exist in target workspace. Sync volumes and re-run.",
+                    name,
+                )
             else:
-                print(f"No changes to sync for volume {name}.")
+                logger.info("No changes to sync for volume %s.", name)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Sync permissions (grants) between workspaces"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show planned operations without executing",
+    )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Set logging level",
+    )
+    args = parser.parse_args()
+    config.dry_run = args.dry_run
+    logger = setup_logging(level=args.log_level)

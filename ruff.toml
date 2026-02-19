@@ -1,0 +1,2 @@
+# Databricks notebook builtins (spark, sql, display) are injected by the runtime.
+builtins = ["spark", "sql", "display"]

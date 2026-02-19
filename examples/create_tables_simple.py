@@ -13,9 +13,9 @@ manifest_df = spark.read.format("delta").load(f"{source_bucket}/{manifest_name}"
 
 # loop through manifest and create each table
 for row in manifest_df.collect():
-    catalog = row['catalog']
-    schema = row['schema']
-    table_name = row['table']
+    catalog = row["catalog"]
+    schema = row["schema"]
+    table_name = row["table"]
     location = row["location"]
     tbl_type = row["type"]
 
@@ -28,4 +28,6 @@ for row in manifest_df.collect():
         sqlstring = f"CREATE TABLE {catalog}.{schema}.{table_name} USING delta LOCATION '{location}'"
         sql(sqlstring)
     else:
-        print(f"Skipping table {catalog}.{schema}.{table_name}; please check manifest file.")
+        print(
+            f"Skipping table {catalog}.{schema}.{table_name}; please check manifest file."
+        )
