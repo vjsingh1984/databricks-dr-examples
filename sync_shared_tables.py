@@ -20,6 +20,7 @@
 #   -num_exec: the number of threads to spawn in the ThreadPoolExecutor.
 #   -target_share_id: the sharing identifier of the secondary metastore.
 
+import logging
 import os
 import time
 import pandas as pd
@@ -34,8 +35,10 @@ from databricks.sdk.service.sharing import (AuthenticationType, SharedDataObject
 from dr_sync.sql_utils import execute_statement_sync, managed_warehouse
 from dr_sync.exceptions import StatementError
 from dr_sync.config import DRSyncConfig
+from dr_sync.log import setup_logging
 
 config = DRSyncConfig.from_env() if os.environ.get("DR_SYNC_SOURCE_HOST") else DRSyncConfig.from_common_module()
+logger = setup_logging()
 target_host = config.target_host
 target_pat = config.target_token
 source_host = config.source_host
@@ -51,7 +54,7 @@ metastore_id = config.metastore_id
 # helper function to clone a table from one catalog to another
 def clone_table(w, source_catalog, target_catalog, schema, table_name, warehouse):
 
-    print(f"Cloning table {source_catalog}.{schema}.{table_name}...")
+    logger.info("Cloning table %s.%s.%s...", source_catalog, schema, table_name)
     try:
         sqlstring = (f"CREATE OR REPLACE TABLE {target_catalog}.{schema}.{table_name} "
                      f"DEEP CLONE {source_catalog}.{schema}.{table_name}")
@@ -88,7 +91,7 @@ w_target = WorkspaceClient(host=target_host, token=target_pat)
 
 # create the secondary metastore as a recipient
 try:
-    print(f"Creating recipient with id {metastore_id}...")
+    logger.info("Creating recipient with id %s...", metastore_id)
     recipient = w_source.recipients.create(name="dr_automation_recipient",
                                            authentication_type=AuthenticationType.DATABRICKS,
                                            data_recipient_global_metastore_id=metastore_id)
@@ -96,7 +99,7 @@ except BadRequest:
 
     try:
         recipient = [r for r in w_source.recipients.list() if r.data_recipient_global_metastore_id == metastore_id][0]
-        print(f"Recipient with id {metastore_id} already exists. Skipping creation...")
+        logger.info("Recipient with id %s already exists. Skipping creation...", metastore_id)
     except IndexError:
         raise RuntimeError(f"Recipient with id {metastore_id} does not exist in source workspace. Please validate the id and create it manually.")
 
@@ -121,7 +124,7 @@ cloned_table_status = []
 cloned_table_times = []
 
 # create warehouse in secondary to run table creation statements, guaranteed cleanup
-print("Creating warehouse in secondary workspace...")
+logger.info("Creating warehouse in secondary workspace...")
 with managed_warehouse(w_target, size=warehouse_size) as wh_id:
     # iterate through all catalogs to share
     for cat in catalogs_to_copy:
@@ -135,12 +138,12 @@ with managed_warehouse(w_target, size=warehouse_size) as wh_id:
         all_schemas = [row["table_schema"] for row in filtered_tables]
 
         # create the share for the current catalog and update permissions
-        print(f"Creating share for catalog {cat}...")
+        logger.info("Creating share for catalog %s...", cat)
         try:
             share = w_source.shares.create(name=f"{cat}_share")
             share_name = share.name
         except BadRequest:
-            print(f"Share {cat}_share already exists. Skipping creation...")
+            logger.info("Share %s_share already exists. Skipping creation...", cat)
             share_name = f"{cat}_share"
 
         try:
@@ -148,7 +151,7 @@ with managed_warehouse(w_target, size=warehouse_size) as wh_id:
                                                    changes=[PermissionsChange(add=[Privilege.SELECT],
                                                                               principal=recipient.name)])
         except BadRequest:
-            print(f"Could not update permissions for share {share_name}.")
+            logger.error("Could not update permissions for share %s.", share_name)
 
         # build update object with all schemas in the current catalog
         updates = [
@@ -162,13 +165,13 @@ with managed_warehouse(w_target, size=warehouse_size) as wh_id:
         try:
             _ = w_source.shares.update(share_name, updates=updates)
         except Exception as e:
-            print(f"Error updating share {share_name}: {e}")
+            logger.error("Error updating share %s: %s", share_name, e)
 
         # create the shared catalog in the target workspace
         try:
             _ = w_target.catalogs.create(name=f"{cat}_share", provider_name=remote_provider_name, share_name=share_name)
         except BadRequest:
-            print(f"Shared catalog {cat}_share already exists. Skipping creation.")
+            logger.info("Shared catalog %s_share already exists. Skipping creation.", cat)
 
         with ThreadPoolExecutor(max_workers=num_exec) as executor:
             threads = executor.map(clone_table,
@@ -187,7 +190,7 @@ with managed_warehouse(w_target, size=warehouse_size) as wh_id:
                 cloned_table_times.append(thread["creation_time"])
 
                 if thread["status"] == "SUCCESS":
-                    print("Loaded table {}.{}.{}.".format(thread["catalog"], thread["schema"], thread["table_name"]))
+                    logger.info("Loaded table %s.%s.%s.", thread["catalog"], thread["schema"], thread["table_name"])
 
     # create the table statuses as a df and write to a table in dr target
     status_df = pd.DataFrame({"catalog": cloned_table_catalogs,

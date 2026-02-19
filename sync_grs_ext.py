@@ -23,6 +23,7 @@
 # warehouse. All table load statuses will be written to the delta table at {target_bucket}/sync_status_{time.time_ns()}.
 
 
+import logging
 import os
 import time
 import pandas as pd
@@ -32,7 +33,9 @@ from concurrent.futures import ThreadPoolExecutor
 from dr_sync.sql_utils import execute_statement_sync, managed_warehouse, drop_table_if_exists
 from dr_sync.exceptions import StatementError
 from dr_sync.config import DRSyncConfig
+from dr_sync.log import setup_logging
 
+logger = setup_logging()
 config = DRSyncConfig.from_env() if os.environ.get("DR_SYNC_SOURCE_HOST") else DRSyncConfig.from_common_module()
 target_host = config.target_host
 target_pat = config.target_token
@@ -46,7 +49,7 @@ response_backoff = config.response_backoff
 # helper function to load tables from a specified location
 def load_table(w, catalog, schema, table_name, location, warehouse):
 
-    print(f"Creating EXTERNAL table {catalog}.{schema}.{table_name}...")
+    logger.info("Creating EXTERNAL table %s.%s.%s...", catalog, schema, table_name)
 
     try:
         sqlstring = f"CREATE TABLE {catalog}.{schema}.{table_name} USING delta LOCATION '{location}'"
@@ -114,10 +117,9 @@ with managed_warehouse(w_target, size=warehouse_size) as wh_id:
 
             for thread in threads:
                 if thread["status"]:
-                    print("Dropped table {}.{}.{}.".format(thread["catalog"], thread["schema"], thread["table_name"]))
+                    logger.info("Dropped table %s.%s.%s.", thread["catalog"], thread["schema"], thread["table_name"])
                 else:
-                    print(
-                        "Error dropping table {}.{}.{}.".format(thread["catalog"], thread["schema"], thread["table_name"]))
+                    logger.error("Error dropping table %s.%s.%s.", thread["catalog"], thread["schema"], thread["table_name"])
 
         # use ThreadPool to copy tables in parallel
         with ThreadPoolExecutor(max_workers=num_exec) as executor:
@@ -137,7 +139,7 @@ with managed_warehouse(w_target, size=warehouse_size) as wh_id:
                 loaded_table_locations.append(thread["location"])
                 loaded_table_status.append(thread["status"])
                 loaded_table_times.append(thread["creation_time"])
-                print("Loaded table {}.{}.{}.".format(thread["catalog"], thread["schema"], thread["table_name"]))
+                logger.info("Loaded table %s.%s.%s.", thread["catalog"], thread["schema"], thread["table_name"])
 
     # create the table statuses as a df and write to a table in dr target
     status_df = pd.DataFrame({"catalog": loaded_table_catalogs,

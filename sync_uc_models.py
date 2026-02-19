@@ -1,11 +1,14 @@
+import logging
 import os
 from itertools import repeat
 from databricks.sdk import WorkspaceClient
 from concurrent.futures import ThreadPoolExecutor
 from databricks.sdk.errors.platform import ResourceAlreadyExists
 from dr_sync.config import DRSyncConfig
+from dr_sync.log import setup_logging
 
 config = DRSyncConfig.from_env() if os.environ.get("DR_SYNC_SOURCE_HOST") else DRSyncConfig.from_common_module()
+logger = setup_logging()
 target_host = config.target_host
 target_pat = config.target_token
 source_host = config.source_host
@@ -16,7 +19,7 @@ num_exec = config.num_exec
 
 # helper function to create models and set appropriate owner
 def create_model(w, catalog_name, schema_name, model_name, location, owner, comment):
-    print(f"Creating model {model_name} in {catalog_name}.{schema_name}...")
+    logger.info("Creating model %s in %s.%s...", model_name, catalog_name, schema_name)
 
     # try creating new model
     try:
@@ -78,8 +81,8 @@ for cat in catalogs_to_copy:
 
         for thread in threads:
             if thread["status"] == "success":
-                print("Created model {}.".format(thread["model"]))
+                logger.info("Created model %s.", thread["model"])
             elif thread["status"] == "already_exists":
-                print("Skipped model {} because it already exists.".format(thread["model"]))
+                logger.warning("Skipped model %s because it already exists.", thread["model"])
             else:
-                print("Could not create model {}; error: {}".format(thread["model"], thread["status"]))
+                logger.error("Could not create model %s; error: %s", thread["model"], thread["status"])

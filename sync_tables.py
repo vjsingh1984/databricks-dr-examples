@@ -27,6 +27,7 @@
 # warehouse. Table load statuses will be written to the delta table at {landing_zone_url}/sync_status_{time.time_ns()}.
 
 
+import logging
 import os
 import time
 import pandas as pd
@@ -36,7 +37,9 @@ from concurrent.futures import ThreadPoolExecutor
 from dr_sync.sql_utils import execute_statement_sync, managed_warehouse, drop_table_if_exists
 from dr_sync.exceptions import StatementError
 from dr_sync.config import DRSyncConfig
+from dr_sync.log import setup_logging
 
+logger = setup_logging()
 config = DRSyncConfig.from_env() if os.environ.get("DR_SYNC_SOURCE_HOST") else DRSyncConfig.from_common_module()
 target_host = config.target_host
 target_pat = config.target_token
@@ -81,7 +84,7 @@ def copy_table(w, catalog, schema, table_name, table_type, bucket, warehouse):
 # helper function to load tables from a specified location
 def load_table(w, catalog, schema, table_name, table_type, location, warehouse):
     if table_type == "MANAGED":
-        print(f"Creating MANAGED table {catalog}.{schema}.{table_name}...")
+        logger.info("Creating MANAGED table %s.%s.%s...", catalog, schema, table_name)
         try:
             sqlstring = f"CREATE OR REPLACE TABLE {catalog}.{schema}.{table_name} DEEP CLONE delta.`{location}`"
             execute_statement_sync(w, warehouse, sqlstring, backoff=response_backoff)
@@ -104,7 +107,7 @@ def load_table(w, catalog, schema, table_name, table_type, location, warehouse):
                     "creation_time": time.time_ns()}
 
     elif table_type == "EXTERNAL":
-        print(f"Creating EXTERNAL table {catalog}.{schema}.{table_name}...")
+        logger.info("Creating EXTERNAL table %s.%s.%s...", catalog, schema, table_name)
 
         try:
             # must drop table if it exists; CREATE_OR_REPLACE does not work when specifying external location
@@ -129,7 +132,7 @@ def load_table(w, catalog, schema, table_name, table_type, location, warehouse):
                     "creation_time": time.time_ns()}
 
     else:
-        print(f"Skipping table {catalog}.{schema}.{table_name}; please check manifest file.")
+        logger.warning("Skipping table %s.%s.%s; please check manifest file.", catalog, schema, table_name)
         return {"catalog": catalog,
                 "schema": schema,
                 "table_name": table_name,
@@ -152,7 +155,7 @@ w_source = WorkspaceClient(host=source_host, token=source_pat)
 system_info = spark.sql("SELECT * FROM system.information_schema.tables")
 
 # Phase 1: copy tables from source to landing zone
-print("Creating warehouse in primary workspace...")
+logger.info("Creating warehouse in primary workspace...")
 with managed_warehouse(w_source, size=warehouse_size) as wh_source_id:
     # loop through all catalogs to copy, then copy all tables excluding system tables.
     # we also skip views; these need to be created separately since they cannot be cloned.
@@ -186,7 +189,7 @@ with managed_warehouse(w_source, size=warehouse_size) as wh_source_id:
                 copied_table_catalogs.append(thread["catalog"])
                 copied_table_locations.append(
                     "{}/{}_{}_{}".format(thread["location"], thread["catalog"], thread["schema"], thread["table_name"]))
-                print("Copied table {}.{}.{}.".format(thread["catalog"], thread["schema"], thread["table_name"]))
+                logger.info("Copied table %s.%s.%s.", thread["catalog"], thread["schema"], thread["table_name"])
 
     # create the manifest as a df and write to a table in dr target
     # this contains catalog, schema, table and location
@@ -217,7 +220,7 @@ loaded_table_status = []
 loaded_table_times = []
 
 # create warehouse to run table creation statements, guaranteed cleanup
-print("Creating warehouse in secondary workspace...")
+logger.info("Creating warehouse in secondary workspace...")
 with managed_warehouse(w_target, size=warehouse_size) as wh_target_id:
     # drop external tables before loading due to CREATE TABLE restrictions
     external_df = manifest_df[manifest_df['type'] == 'EXTERNAL']
@@ -231,9 +234,9 @@ with managed_warehouse(w_target, size=warehouse_size) as wh_target_id:
 
         for thread in threads:
             if thread["status"]:
-                print("Dropped table {}.{}.{}.".format(thread["catalog"], thread["schema"], thread["table_name"]))
+                logger.info("Dropped table %s.%s.%s.", thread["catalog"], thread["schema"], thread["table_name"])
             else:
-                print("Error dropping table {}.{}.{}.".format(thread["catalog"], thread["schema"], thread["table_name"]))
+                logger.error("Error dropping table %s.%s.%s.", thread["catalog"], thread["schema"], thread["table_name"])
 
     # load all tables
     with ThreadPoolExecutor(max_workers=num_exec) as executor:
@@ -254,7 +257,7 @@ with managed_warehouse(w_target, size=warehouse_size) as wh_target_id:
             loaded_table_locations.append(thread["location"])
             loaded_table_status.append(thread["status"])
             loaded_table_times.append(thread["creation_time"])
-            print("Loaded table {}.{}.{}.".format(thread["catalog"], thread["schema"], thread["table_name"]))
+            logger.info("Loaded table %s.%s.%s.", thread["catalog"], thread["schema"], thread["table_name"])
 
     # create the table statuses as a df and write to a table in dr target
     status_df = pd.DataFrame({"catalog": loaded_table_catalogs,

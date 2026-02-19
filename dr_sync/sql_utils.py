@@ -1,7 +1,10 @@
 """SQL statement execution utilities and warehouse lifecycle management."""
 
+import logging
 import time
 from contextlib import contextmanager
+
+logger = logging.getLogger("dr_sync")
 
 from databricks.sdk.service.sql import (
     Disposition,
@@ -93,9 +96,9 @@ def managed_warehouse(client, size="Small", name_prefix="sdk"):
     finally:
         try:
             client.warehouses.delete(wh.id)
-            print(f"Cleaned up warehouse {wh.id}")
+            logger.info("Cleaned up warehouse %s", wh.id)
         except Exception as e:
-            print(f"Warning: could not delete warehouse {wh.id}: {e}")
+            logger.warning("Could not delete warehouse %s: %s", wh.id, e)
 
 
 def drop_table_if_exists(client, warehouse_id, catalog, schema, table_name, backoff=0.5):
@@ -105,7 +108,7 @@ def drop_table_if_exists(client, warehouse_id, catalog, schema, table_name, back
         dict with status (1=success, 0=failure) and table identifiers.
     """
     fqn = f"{catalog}.{schema}.{table_name}"
-    print(f"Dropping table {fqn}...")
+    logger.info("Dropping table %s...", fqn)
 
     try:
         execute_statement_sync(

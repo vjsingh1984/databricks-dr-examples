@@ -16,6 +16,7 @@
 #   -num_exec: the number of threads to spawn in the ThreadPoolExecutor.
 
 
+import logging
 import os
 from itertools import repeat
 from databricks.sdk import WorkspaceClient
@@ -23,8 +24,10 @@ from databricks.sdk.service import catalog
 from concurrent.futures import ThreadPoolExecutor
 from databricks.sdk.errors.platform import ResourceAlreadyExists
 from dr_sync.config import DRSyncConfig
+from dr_sync.log import setup_logging
 
 config = DRSyncConfig.from_env() if os.environ.get("DR_SYNC_SOURCE_HOST") else DRSyncConfig.from_common_module()
+logger = setup_logging()
 target_host = config.target_host
 target_pat = config.target_token
 source_host = config.source_host
@@ -35,7 +38,7 @@ num_exec = config.num_exec
 
 # helper function to create volumes and set appropriate owner
 def create_volume(w, catalog_name, schema_name, volume_name, location, owner):
-    print(f"Creating volume {volume_name} in {catalog_name}.{schema_name}...")
+    logger.info("Creating volume %s in %s.%s...", volume_name, catalog_name, schema_name)
 
     # try creating new volume
     try:
@@ -92,8 +95,8 @@ for cat in catalogs_to_copy:
 
         for thread in threads:
             if thread["status"] == "success":
-                print("Created volume {}.".format(thread["volume"]))
+                logger.info("Created volume %s.", thread["volume"])
             elif thread["status"] == "already_exists":
-                print("Skipped volume {} because it already exists.".format(thread["volume"]))
+                logger.warning("Skipped volume %s because it already exists.", thread["volume"])
             else:
-                print("Could not create volume {}; error: {}".format(thread["volume"], thread["status"]))
+                logger.error("Could not create volume %s; error: %s", thread["volume"], thread["status"])

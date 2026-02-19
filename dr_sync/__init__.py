@@ -13,6 +13,7 @@ from dr_sync.workspace import create_client
 from dr_sync.csv_mapping import load_mapping, lookup_value
 from dr_sync.thread_utils import parallel_map, ProgressCounter
 from dr_sync.config import DRSyncConfig
+from dr_sync.log import setup_logging
 
 __all__ = [
     "DRSyncError",
@@ -30,4 +31,5 @@ __all__ = [
     "parallel_map",
     "ProgressCounter",
     "DRSyncConfig",
+    "setup_logging",
 ]

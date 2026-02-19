@@ -15,12 +15,15 @@
 # Currently, we use PAT-based auth for the WorkspaceClient objects, so you must provide the host and token manually for
 # each workspace. You can update this to use other auth methods if desired.
 
+import logging
 import os
 from databricks.sdk import WorkspaceClient
 from dr_sync.csv_mapping import load_mapping, lookup_value
 from dr_sync.config import DRSyncConfig
+from dr_sync.log import setup_logging
 
 config = DRSyncConfig.from_env() if os.environ.get("DR_SYNC_SOURCE_HOST") else DRSyncConfig.from_common_module()
+logger = setup_logging()
 target_host = config.target_host
 target_pat = config.target_token
 source_host = config.source_host
@@ -47,13 +50,15 @@ catalogs_to_create = [x for x in source_catalogs if x.name in catalog_diff]
 catalog_df = load_mapping(catalog_mapping_file)
 
 if not catalogs_to_create:
-    print("All source catalogs exist in target metastore.")
+    logger.info("All source catalogs exist in target metastore.")
 
 for catalog in catalogs_to_create:
     # skip shared or external catalogs
     if catalog.connection_name or catalog.share_name:
-        print(f"External Catalogs and Shared Catalogs are not currently supported by this script. \
-        Skipping {catalog.name}...")
+        logger.warning(
+            "External Catalogs and Shared Catalogs are not currently supported by this script. "
+            "Skipping %s...", catalog.name
+        )
         continue
 
     # get parameters that map directly between catalogs
@@ -62,12 +67,12 @@ for catalog in catalogs_to_create:
     catalog_options = catalog.options
     catalog_properties = catalog.properties
 
-    print(f"Creating catalog {catalog_name}...")
+    logger.info("Creating catalog %s...", catalog_name)
 
     # get target storage root based off of catalog name
     storage_root = lookup_value(catalog_df, 'source_catalog', catalog_name, 'target_storage_root')
     if storage_root is None:
-        print(f"Could not create catalog {catalog_name}. Please check mapping file.")
+        logger.error("Could not create catalog %s. Please check mapping file.", catalog_name)
         continue
 
     # create catalog in target metastore
@@ -83,7 +88,7 @@ for catalog in catalogs_to_create:
                                  options=catalog_options,
                                  properties=catalog_properties)
 
-    print(f"Created catalog {catalog_name}.")
+    logger.info("Created catalog %s.", catalog_name)
 
 schema_df = load_mapping(schema_mapping_file)
 
@@ -106,7 +111,7 @@ for catalog in source_catalogs:
             (schema_df['source_catalog'] == catalog.name)
         ]
         if filtered.empty:
-            print(f"Could not create schema {catalog.name}.{schema_name}. Please check mapping file.")
+            logger.error("Could not create schema %s.%s. Please check mapping file.", catalog.name, schema_name)
             continue
 
         storage_root = filtered['target_storage_root'].iloc[0]
@@ -123,4 +128,4 @@ for catalog in source_catalogs:
                                     properties=schema_properties,
                                     catalog_name=catalog.name)
 
-        print(f"Created schema {catalog.name}.{schema_name}.")
+        logger.info("Created schema %s.%s.", catalog.name, schema_name)

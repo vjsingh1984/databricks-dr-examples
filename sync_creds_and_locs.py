@@ -23,13 +23,16 @@
 # cloud object information in the provided CSVs, especially for Azure; this could be done by directly interfacing with
 # the cloud provider CLI/APIs within this script (or as part of an external workflow).
 
+import logging
 import os
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import catalog
 from dr_sync.csv_mapping import load_mapping, lookup_value
 from dr_sync.config import DRSyncConfig
+from dr_sync.log import setup_logging
 
 config = DRSyncConfig.from_env() if os.environ.get("DR_SYNC_SOURCE_HOST") else DRSyncConfig.from_common_module()
+logger = setup_logging()
 target_host = config.target_host
 target_pat = config.target_token
 source_host = config.source_host
@@ -57,20 +60,20 @@ creds_to_create = [x for x in source_creds if x.name in cred_diff]
 cred_df = load_mapping(cred_mapping_file)
 
 if not creds_to_create:
-    print("All source credentials exist in target metastore.")
+    logger.info("All source credentials exist in target metastore.")
 
 for cred in creds_to_create:
     # get parameters that map directly between creds
     cred_name = cred.name
     cred_read_only = cred.read_only
     cred_comment = cred.comment
-    print(f"Creating storage credential {cred_name}...")
+    logger.info("Creating storage credential %s...", cred_name)
 
     if cloud_type == "aws":
         # get cred IAM role based off of name
         iam_role_arn = lookup_value(cred_df, 'source_cred_name', cred_name, 'target_iam_role')
         if iam_role_arn is None:
-            print(f"Could not create credential {cred_name}. Please check mapping file.")
+            logger.error("Could not create credential %s. Please check mapping file.", cred_name)
             continue
 
         # create storage credential in target WS
@@ -88,7 +91,7 @@ for cred in creds_to_create:
         sp_secret = lookup_value(cred_df, 'source_cred_name', cred_name, 'target_sp_secret')
 
         if managed_id_connector is None and managed_id_identity is None and sp_directory is None:
-            print(f"Could not create credential {cred_name}. Please check mapping file.")
+            logger.error("Could not create credential %s. Please check mapping file.", cred_name)
             continue
 
         # create storage credential in target WS
@@ -114,17 +117,18 @@ for cred in creds_to_create:
                                                     comment=cred_comment,
                                                     azure_service_principal=cred_sp)
             except Exception:
-                print(f"Could not create credential {cred_name}. Please make sure that only one of \
-                managed_id_connector, managed_id_identity or service_principal info is provided in the mapping.")
+                logger.error("Could not create credential %s. Please make sure that only one of "
+                             "managed_id_connector, managed_id_identity or service_principal info "
+                             "is provided in the mapping.", cred_name)
 
     elif cloud_type == "gcp":
-        print("GCP not yet implemented.")
+        logger.warning("GCP not yet implemented.")
         continue
     else:
-        print("Cloud type must be one of AWS, GCP, or Azure.")
+        logger.error("Cloud type must be one of AWS, GCP, or Azure.")
         continue
 
-    print(f"Created storage credential {cred_name}.")
+    logger.info("Created storage credential %s.", cred_name)
 
 # compare source and target external locations
 # we can only do this by name since the URL and IDs will change between workspaces
@@ -135,7 +139,7 @@ locs_to_create = [x for x in source_extloc if x.name in loc_diff]
 loc_df = load_mapping(loc_mapping_file)
 
 if not locs_to_create:
-    print("All source external locations exist in target metastore.")
+    logger.info("All source external locations exist in target metastore.")
 
 for loc in locs_to_create:
     # get parameters that map directly between creds
@@ -144,14 +148,14 @@ for loc in locs_to_create:
     loc_comment = loc.comment
     loc_fallback = loc.fallback
     loc_read_only = loc.read_only
-    print(f"Creating external location {loc_name}...")
+    logger.info("Creating external location %s...", loc_name)
 
     if cloud_type == "aws":
         url = lookup_value(loc_df, 'source_loc_name', loc_name, 'target_url')
         access_pt = lookup_value(loc_df, 'source_loc_name', loc_name, 'target_access_pt')
 
         if url is None:
-            print(f"Could not create location {loc_name}. Please check mapping file.")
+            logger.error("Could not create location %s. Please check mapping file.", loc_name)
             continue
 
         if access_pt:
@@ -173,7 +177,7 @@ for loc in locs_to_create:
         url = lookup_value(loc_df, 'source_loc_name', loc_name, 'target_url')
 
         if url is None:
-            print(f"Could not create location {loc_name}. Please check mapping file.")
+            logger.error("Could not create location %s. Please check mapping file.", loc_name)
             continue
 
         w_target.external_locations.create(name=loc_name,
@@ -183,10 +187,10 @@ for loc in locs_to_create:
                                            read_only=loc_read_only,
                                            url=url)
     elif cloud_type == "gcp":
-        print("GCP not yet implemented.")
+        logger.warning("GCP not yet implemented.")
         continue
     else:
-        print("Cloud type must be one of AWS, GCP, or Azure.")
+        logger.error("Cloud type must be one of AWS, GCP, or Azure.")
         continue
 
-    print(f"External location {loc_name} created.")
+    logger.info("External location %s created.", loc_name)

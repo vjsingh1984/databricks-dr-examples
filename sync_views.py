@@ -24,6 +24,7 @@
 # warehouse. Table load statuses will be written to the delta table at {landing_zone_url}/sync_status_{time.time_ns()}.
 
 
+import logging
 import os
 import time
 import pandas as pd
@@ -33,7 +34,9 @@ from concurrent.futures import ThreadPoolExecutor
 from dr_sync.sql_utils import execute_statement_sync, managed_warehouse
 from dr_sync.exceptions import StatementError
 from dr_sync.config import DRSyncConfig
+from dr_sync.log import setup_logging
 
+logger = setup_logging()
 config = DRSyncConfig.from_env() if os.environ.get("DR_SYNC_SOURCE_HOST") else DRSyncConfig.from_common_module()
 target_host = config.target_host
 target_pat = config.target_token
@@ -87,7 +90,7 @@ loaded_view_status = []
 loaded_view_times = []
 
 # create warehouse to run view creation statements, guaranteed cleanup
-print("Creating warehouse in secondary workspace...")
+logger.info("Creating warehouse in secondary workspace...")
 with managed_warehouse(w_target, size=warehouse_size) as wh_id:
     # load all views per catalog
     for cat in catalogs_to_copy:
@@ -113,7 +116,7 @@ with managed_warehouse(w_target, size=warehouse_size) as wh_id:
                 loaded_view_catalogs.append(thread["catalog"])
                 loaded_view_status.append(thread["status"])
                 loaded_view_times.append(thread["creation_time"])
-                print("Loaded view {}.{}.{}.".format(thread["catalog"], thread["schema"], thread["view_name"]))
+                logger.info("Loaded view %s.%s.%s.", thread["catalog"], thread["schema"], thread["view_name"])
 
     # create the table statuses as a df and write to a table in dr target
     status_df = pd.DataFrame({"catalog": loaded_view_catalogs,
