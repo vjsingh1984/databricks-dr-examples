@@ -31,12 +31,9 @@ import time
 import pandas as pd
 from itertools import repeat
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service import sql as dbsql
 from concurrent.futures import ThreadPoolExecutor
-from databricks.sdk.service.sql import Disposition
-from databricks.sdk.service.sql import StatementState
-from databricks.sdk.service.sql import CreateWarehouseRequestWarehouseType
-from databricks.sdk.service.sql import ExecuteStatementRequestOnWaitTimeout
+from dr_sync.sql_utils import execute_statement_sync, managed_warehouse, drop_table_if_exists
+from dr_sync.exceptions import StatementError
 from common import (target_pat, target_host,
                     source_pat, source_host,
                     catalogs_to_copy, num_exec,
@@ -48,22 +45,7 @@ from common import (target_pat, target_host,
 def copy_table(w, catalog, schema, table_name, table_type, bucket, warehouse):
     try:
         sqlstring = f"CREATE OR REPLACE TABLE delta.`{bucket}/{catalog}_{schema}_{table_name}` DEEP CLONE {catalog}.{schema}.{table_name}"
-        resp = w.statement_execution.execute_statement(warehouse_id=warehouse,
-                                                       wait_timeout="0s",
-                                                       on_wait_timeout=ExecuteStatementRequestOnWaitTimeout("CONTINUE"),
-                                                       disposition=Disposition("EXTERNAL_LINKS"),
-                                                       statement=sqlstring)
-
-        while resp.status.state in {StatementState.PENDING, StatementState.RUNNING}:
-            resp = w.statement_execution.get_statement(resp.statement_id)
-            time.sleep(response_backoff)
-
-        if resp.status.state != StatementState.SUCCEEDED:
-            return {"catalog": catalog,
-                    "schema": schema,
-                    "table_name": table_name,
-                    "table_type": f"COPY_ERROR: {resp.status.error.message}",
-                    "location": "N/A"}
+        execute_statement_sync(w, warehouse, sqlstring, backoff=response_backoff)
 
         # return the table params in dict; used to build manifest
         return {"catalog": catalog,
@@ -71,6 +53,13 @@ def copy_table(w, catalog, schema, table_name, table_type, bucket, warehouse):
                 "table_name": table_name,
                 "table_type": table_type,
                 "location": bucket}
+
+    except StatementError as e:
+        return {"catalog": catalog,
+                "schema": schema,
+                "table_name": table_name,
+                "table_type": f"COPY_ERROR: {e}",
+                "location": "N/A"}
 
     except Exception as e:
         return {"catalog": catalog,
@@ -80,65 +69,13 @@ def copy_table(w, catalog, schema, table_name, table_type, bucket, warehouse):
                 "location": "N/A"}
 
 
-# helper function to drop external tables
-def drop_table(w, catalog, schema, table_name, warehouse):
-    print(f"Dropping table {catalog}.{schema}.{table_name}...")
-
-    try:
-        sqlstring = f"DROP TABLE IF EXISTS {catalog}.{schema}.{table_name}"
-        resp = w.statement_execution.execute_statement(warehouse_id=warehouse,
-                                                       wait_timeout="0s",
-                                                       on_wait_timeout=ExecuteStatementRequestOnWaitTimeout("CONTINUE"),
-                                                       disposition=Disposition("EXTERNAL_LINKS"),
-                                                       statement=sqlstring)
-
-        while resp.status.state in {StatementState.PENDING, StatementState.RUNNING}:
-            resp = w.statement_execution.get_statement(resp.statement_id)
-            time.sleep(response_backoff)
-
-        if resp.status.state != StatementState.SUCCEEDED:
-            return {"status": 0,
-                    "catalog": catalog,
-                    "schema": schema,
-                    "table_name": table_name}
-
-        return {"status": 1,
-                "catalog": catalog,
-                "schema": schema,
-                "table_name": table_name}
-
-    except Exception:
-        return {"status": 0,
-                "catalog": catalog,
-                "schema": schema,
-                "table_name": table_name}
-
-
 # helper function to load tables from a specified location
 def load_table(w, catalog, schema, table_name, table_type, location, warehouse):
     if table_type == "MANAGED":
         print(f"Creating MANAGED table {catalog}.{schema}.{table_name}...")
         try:
             sqlstring = f"CREATE OR REPLACE TABLE {catalog}.{schema}.{table_name} DEEP CLONE delta.`{location}`"
-            resp = w.statement_execution.execute_statement(warehouse_id=warehouse,
-                                                           wait_timeout="0s",
-                                                           on_wait_timeout=ExecuteStatementRequestOnWaitTimeout(
-                                                               "CONTINUE"),
-                                                           disposition=Disposition("EXTERNAL_LINKS"),
-                                                           statement=sqlstring)
-
-            while resp.status.state in {StatementState.PENDING, StatementState.RUNNING}:
-                resp = w.statement_execution.get_statement(resp.statement_id)
-                time.sleep(response_backoff)
-
-            if resp.status.state != StatementState.SUCCEEDED:
-                return {"catalog": catalog,
-                        "schema": schema,
-                        "table_name": table_name,
-                        "table_type": table_type,
-                        "location": location,
-                        "status": f"FAIL: {resp.status.error.message}",
-                        "creation_time": time.time_ns()}
+            execute_statement_sync(w, warehouse, sqlstring, backoff=response_backoff)
 
             return {"catalog": catalog,
                     "schema": schema,
@@ -163,24 +100,7 @@ def load_table(w, catalog, schema, table_name, table_type, location, warehouse):
         try:
             # must drop table if it exists; CREATE_OR_REPLACE does not work when specifying external location
             sqlstring = f"CREATE TABLE {catalog}.{schema}.{table_name} USING delta LOCATION '{location}'"
-            resp = w.statement_execution.execute_statement(warehouse_id=warehouse,
-                                                           wait_timeout="0s",
-                                                           on_wait_timeout=ExecuteStatementRequestOnWaitTimeout("CONTINUE"),
-                                                           disposition=Disposition("EXTERNAL_LINKS"),
-                                                           statement=sqlstring)
-
-            while resp.status.state in {StatementState.PENDING, StatementState.RUNNING}:
-                resp = w.statement_execution.get_statement(resp.statement_id)
-                time.sleep(response_backoff)
-
-            if resp.status.state != StatementState.SUCCEEDED:
-                return {"catalog": catalog,
-                        "schema": schema,
-                        "table_name": table_name,
-                        "table_type": table_type,
-                        "location": location,
-                        "status": f"FAIL: {resp.status.error.message}",
-                        "creation_time": time.time_ns()}
+            execute_statement_sync(w, warehouse, sqlstring, backoff=response_backoff)
 
             return {"catalog": catalog,
                     "schema": schema,
@@ -210,9 +130,6 @@ def load_table(w, catalog, schema, table_name, table_type, location, warehouse):
                 "creation_time": "N/A"}
 
 
-# other parameters
-wh_type = CreateWarehouseRequestWarehouseType("PRO")  # required for serverless warehouse
-
 # initialize lists
 copied_table_names = []
 copied_table_types = []
@@ -223,21 +140,11 @@ copied_table_locations = []
 # create the WorkspaceClient pointed at the source WS
 w_source = WorkspaceClient(host=source_host, token=source_pat)
 
-# create warehouse in the primary workspace
-print("Creating warehouse in primary workspace...")
-wh_source = w_source.warehouses.create(name=f'sdk-{time.time_ns()}',
-                                       cluster_size=warehouse_size,
-                                       max_num_clusters=1,
-                                       auto_stop_mins=10,
-                                       warehouse_type=wh_type,
-                                       enable_serverless_compute=True,
-                                       tags=dbsql.EndpointTags(
-                                           custom_tags=[
-                                               dbsql.EndpointTagPair(key="Owner", value="dr-sync-tool")])).result()
-
 system_info = spark.sql("SELECT * FROM system.information_schema.tables")
 
-try:
+# Phase 1: copy tables from source to landing zone
+print("Creating warehouse in primary workspace...")
+with managed_warehouse(w_source, size=warehouse_size) as wh_source_id:
     # loop through all catalogs to copy, then copy all tables excluding system tables.
     # we also skip views; these need to be created separately since they cannot be cloned.
     for cat in catalogs_to_copy:
@@ -260,7 +167,7 @@ try:
                                    table_names,
                                    table_types,
                                    repeat(landing_zone_url),
-                                   repeat(wh_source.id))
+                                   repeat(wh_source_id))
 
             # wait for threads to execute and build lists for manifest
             for thread in threads:
@@ -287,27 +194,9 @@ try:
      .format("delta")
      .save(f"{landing_zone_url}/{manifest_name}-{ts1}"))
 
-finally:
-    try:
-        w_source.warehouses.delete(wh_source.id)
-        print(f"Cleaned up source warehouse {wh_source.id}")
-    except Exception as e:
-        print(f"Warning: could not delete source warehouse {wh_source.id}: {e}")
-
+# Phase 2: load tables from landing zone to target
 # create the WorkspaceClient pointed at the target WS
 w_target = WorkspaceClient(host=target_host, token=target_pat)
-
-# create warehouse to run table creation statements
-print("Creating warehouse in secondary workspace...")
-wh_target = w_target.warehouses.create(name=f'sdk-{time.time_ns()}',
-                                       cluster_size=warehouse_size,
-                                       max_num_clusters=1,
-                                       auto_stop_mins=10,
-                                       warehouse_type=wh_type,
-                                       enable_serverless_compute=True,
-                                       tags=dbsql.EndpointTags(
-                                           custom_tags=[
-                                               dbsql.EndpointTagPair(key="Owner", value="dr-sync-tool")])).result()
 
 # initialize lists for status tracking
 loaded_table_names = []
@@ -318,16 +207,18 @@ loaded_table_locations = []
 loaded_table_status = []
 loaded_table_times = []
 
-try:
+# create warehouse to run table creation statements, guaranteed cleanup
+print("Creating warehouse in secondary workspace...")
+with managed_warehouse(w_target, size=warehouse_size) as wh_target_id:
     # drop external tables before loading due to CREATE TABLE restrictions
     external_df = manifest_df[manifest_df['type'] == 'EXTERNAL']
     with ThreadPoolExecutor(max_workers=num_exec) as executor:
-        threads = executor.map(drop_table,
+        threads = executor.map(drop_table_if_exists,
                                repeat(w_target),
+                               repeat(wh_target_id),
                                list(external_df['catalog']),
                                list(external_df['schema']),
-                               list(external_df['table']),
-                               repeat(wh_target.id))
+                               list(external_df['table']))
 
         for thread in threads:
             if thread["status"]:
@@ -344,7 +235,7 @@ try:
                                list(manifest_df['table']),
                                list(manifest_df['type']),
                                list(manifest_df['location']),
-                               repeat(wh_target.id))
+                               repeat(wh_target_id))
 
         for thread in threads:
             loaded_table_names.append(thread["table_name"])
@@ -371,10 +262,3 @@ try:
      .write.mode("overwrite")
      .format("delta")
      .save(f"{landing_zone_url}/sync_status_{ts2}"))
-
-finally:
-    try:
-        w_target.warehouses.delete(wh_target.id)
-        print(f"Cleaned up target warehouse {wh_target.id}")
-    except Exception as e:
-        print(f"Warning: could not delete target warehouse {wh_target.id}: {e}")

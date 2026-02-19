@@ -24,15 +24,14 @@ import time
 import pandas as pd
 from itertools import repeat
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service import sql as dbsql
 from concurrent.futures import ThreadPoolExecutor
-from databricks.sdk.service.sql import (Disposition, StatementState,
-                                        CreateWarehouseRequestWarehouseType, ExecuteStatementRequestOnWaitTimeout)
 from databricks.sdk.errors.platform import BadRequest
 from databricks.sdk.service.catalog import Privilege, PermissionsChange
 from databricks.sdk.service.sharing import (AuthenticationType, SharedDataObjectUpdate,
                                             SharedDataObjectUpdateAction, SharedDataObject,
                                             SharedDataObjectDataObjectType, SharedDataObjectStatus)
+from dr_sync.sql_utils import execute_statement_sync, managed_warehouse
+from dr_sync.exceptions import StatementError
 from common import (target_pat, target_host,
                     source_pat, source_host,
                     catalogs_to_copy, num_exec,
@@ -48,28 +47,19 @@ def clone_table(w, source_catalog, target_catalog, schema, table_name, warehouse
         sqlstring = (f"CREATE OR REPLACE TABLE {target_catalog}.{schema}.{table_name} "
                      f"DEEP CLONE {source_catalog}.{schema}.{table_name}")
 
-        resp = w.statement_execution.execute_statement(warehouse_id=warehouse,
-                                                       wait_timeout="0s",
-                                                       on_wait_timeout=ExecuteStatementRequestOnWaitTimeout(
-                                                           "CONTINUE"),
-                                                       disposition=Disposition("EXTERNAL_LINKS"),
-                                                       statement=sqlstring)
-
-        while resp.status.state in {StatementState.PENDING, StatementState.RUNNING}:
-            resp = w.statement_execution.get_statement(resp.statement_id)
-            time.sleep(response_backoff)
-
-        if resp.status.state != StatementState.SUCCEEDED:
-            return {"catalog": target_catalog,
-                    "schema": schema,
-                    "table_name": table_name,
-                    "status": f"FAIL: {resp.status.error.message}",
-                    "creation_time": time.time_ns()}
+        execute_statement_sync(w, warehouse, sqlstring, backoff=response_backoff)
 
         return {"catalog": target_catalog,
                 "schema": schema,
                 "table_name": table_name,
                 "status": "SUCCESS",
+                "creation_time": time.time_ns()}
+
+    except StatementError as e:
+        return {"catalog": target_catalog,
+                "schema": schema,
+                "table_name": table_name,
+                "status": f"FAIL: {e}",
                 "creation_time": time.time_ns()}
 
     except Exception as e:
@@ -81,24 +71,11 @@ def clone_table(w, source_catalog, target_catalog, schema, table_name, warehouse
 
 
 # other parameters
-wh_type = CreateWarehouseRequestWarehouseType("PRO")  # required for serverless warehouse
 write_results = False  # set to true to write status df to disk
 
 # create the WorkspaceClients for source and target workspaces
 w_source = WorkspaceClient(host=source_host, token=source_pat)
 w_target = WorkspaceClient(host=target_host, token=target_pat)
-
-# create warehouse in secondary to run table creation statements
-print("Creating warehouse in secondary workspace...")
-wh_target = w_target.warehouses.create(name=f'sdk-{time.time_ns()}',
-                                       cluster_size=warehouse_size,
-                                       max_num_clusters=1,
-                                       auto_stop_mins=10,
-                                       warehouse_type=wh_type,
-                                       enable_serverless_compute=True,
-                                       tags=dbsql.EndpointTags(
-                                           custom_tags=[
-                                               dbsql.EndpointTagPair(key="Owner", value="dr-sync-tool")])).result()
 
 # create the secondary metastore as a recipient
 try:
@@ -134,7 +111,9 @@ cloned_table_catalogs = []
 cloned_table_status = []
 cloned_table_times = []
 
-try:
+# create warehouse in secondary to run table creation statements, guaranteed cleanup
+print("Creating warehouse in secondary workspace...")
+with managed_warehouse(w_target, size=warehouse_size) as wh_id:
     # iterate through all catalogs to share
     for cat in catalogs_to_copy:
         filtered_tables = system_info.filter(
@@ -189,7 +168,7 @@ try:
                                    repeat(cat),
                                    all_schemas,
                                    all_tables,
-                                   repeat(wh_target.id))
+                                   repeat(wh_id))
 
             for thread in threads:
                 cloned_table_names.append(thread["table_name"])
@@ -215,10 +194,3 @@ try:
          .write.mode("overwrite")
          .format("delta")
          .save(f"{landing_zone_url}/sync_status_{ts2}"))
-
-finally:
-    try:
-        w_target.warehouses.delete(wh_target.id)
-        print(f"Cleaned up warehouse {wh_target.id}")
-    except Exception as e:
-        print(f"Warning: could not delete warehouse {wh_target.id}: {e}")

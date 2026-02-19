@@ -16,7 +16,7 @@
 # each workspace. You can update this to use other auth methods if desired.
 
 from databricks.sdk import WorkspaceClient
-import pandas as pd
+from dr_sync.csv_mapping import load_mapping, lookup_value
 from common import (target_pat, target_host,
                     source_pat, source_host,
                     catalogs_to_copy, catalog_mapping_file,
@@ -37,7 +37,7 @@ source_catalog_names = [x.name for x in source_catalogs]
 target_catalog_names = [x.name for x in target_catalogs]
 catalog_diff = list(set(source_catalog_names) - set(target_catalog_names))
 catalogs_to_create = [x for x in source_catalogs if x.name in catalog_diff]
-catalog_df = pd.read_csv(catalog_mapping_file, keep_default_na=False)
+catalog_df = load_mapping(catalog_mapping_file)
 
 if not catalogs_to_create:
     print("All source catalogs exist in target metastore.")
@@ -58,9 +58,8 @@ for catalog in catalogs_to_create:
     print(f"Creating catalog {catalog_name}...")
 
     # get target storage root based off of catalog name
-    try:
-        storage_root = catalog_df['target_storage_root'].loc[catalog_df['source_catalog'] == catalog_name].iloc[0]
-    except (KeyError, IndexError):
+    storage_root = lookup_value(catalog_df, 'source_catalog', catalog_name, 'target_storage_root')
+    if storage_root is None:
         print(f"Could not create catalog {catalog_name}. Please check mapping file.")
         continue
 
@@ -79,7 +78,7 @@ for catalog in catalogs_to_create:
 
     print(f"Created catalog {catalog_name}.")
 
-schema_df = pd.read_csv(schema_mapping_file, keep_default_na=False)
+schema_df = load_mapping(schema_mapping_file)
 
 for catalog in source_catalogs:
     source_schemas = [x for x in w_source.schemas.list(catalog.name)]
@@ -94,13 +93,16 @@ for catalog in source_catalogs:
         schema_comment = schema.comment
         schema_properties = schema.properties
 
-        try:
-            storage_root = (schema_df['target_storage_root'].loc[
-                (schema_df['source_schema'] == schema_name) &
-                (schema_df['source_catalog'] == catalog.name)].iloc[0])
-        except (KeyError, IndexError):
+        # filter for matching catalog and schema
+        filtered = schema_df[
+            (schema_df['source_schema'] == schema_name) &
+            (schema_df['source_catalog'] == catalog.name)
+        ]
+        if filtered.empty:
             print(f"Could not create schema {catalog.name}.{schema_name}. Please check mapping file.")
             continue
+
+        storage_root = filtered['target_storage_root'].iloc[0]
 
         if storage_root:
             w_target.schemas.create(name=schema_name,

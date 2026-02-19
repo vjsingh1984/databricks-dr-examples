@@ -28,12 +28,9 @@ import time
 import pandas as pd
 from itertools import repeat
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service import sql as dbsql
 from concurrent.futures import ThreadPoolExecutor
-from databricks.sdk.service.sql import Disposition
-from databricks.sdk.service.sql import StatementState
-from databricks.sdk.service.sql import CreateWarehouseRequestWarehouseType
-from databricks.sdk.service.sql import ExecuteStatementRequestOnWaitTimeout
+from dr_sync.sql_utils import execute_statement_sync, managed_warehouse
+from dr_sync.exceptions import StatementError
 from common import (target_pat, target_host,
                     catalogs_to_copy, num_exec,
                     landing_zone_url, warehouse_size,
@@ -46,27 +43,19 @@ def create_view(w, catalog, schema, view_name, warehouse):
     try:
         view_stmt = spark.sql(f"show create table {catalog}.{schema}.{view_name}").collect()[0]["createtab_stmt"]
 
-        resp = w.statement_execution.execute_statement(warehouse_id=warehouse,
-                                                       wait_timeout="0s",
-                                                       on_wait_timeout=ExecuteStatementRequestOnWaitTimeout("CONTINUE"),
-                                                       disposition=Disposition("EXTERNAL_LINKS"),
-                                                       statement=view_stmt)
-
-        while resp.status.state in {StatementState.PENDING, StatementState.RUNNING}:
-            resp = w.statement_execution.get_statement(resp.statement_id)
-            time.sleep(response_backoff)
-
-        if resp.status.state != StatementState.SUCCEEDED:
-            return {"catalog": catalog,
-                    "schema": schema,
-                    "view_name": view_name,
-                    "status": f"FAIL: {resp.status.error.message}",
-                    "creation_time": time.time_ns()}
+        execute_statement_sync(w, warehouse, view_stmt, backoff=response_backoff)
 
         return {"catalog": catalog,
                 "schema": schema,
                 "view_name": view_name,
                 "status": "SUCCESS",
+                "creation_time": time.time_ns()}
+
+    except StatementError as e:
+        return {"catalog": catalog,
+                "schema": schema,
+                "view_name": view_name,
+                "status": f"FAIL: {e}",
                 "creation_time": time.time_ns()}
 
     except Exception as e:
@@ -77,26 +66,11 @@ def create_view(w, catalog, schema, view_name, warehouse):
                 "creation_time": time.time_ns()}
 
 
-# other parameters
-wh_type = CreateWarehouseRequestWarehouseType("PRO")  # required for serverless warehouse
-
 # pull all views from source ws
 all_views = spark.sql("SELECT * FROM system.information_schema.views")
 
 # create the WorkspaceClient pointed at the target WS
 w_target = WorkspaceClient(host=target_host, token=target_pat)
-
-# create warehouse to run view creation statements
-print("Creating warehouse in secondary workspace...")
-wh_target = w_target.warehouses.create(name=f'sdk-{time.time_ns()}',
-                                       cluster_size=warehouse_size,
-                                       max_num_clusters=1,
-                                       auto_stop_mins=10,
-                                       warehouse_type=wh_type,
-                                       enable_serverless_compute=True,
-                                       tags=dbsql.EndpointTags(
-                                           custom_tags=[
-                                               dbsql.EndpointTagPair(key="Owner", value="dr-sync-tool")])).result()
 
 # initialize lists for status tracking
 loaded_view_names = []
@@ -105,7 +79,9 @@ loaded_view_catalogs = []
 loaded_view_status = []
 loaded_view_times = []
 
-try:
+# create warehouse to run view creation statements, guaranteed cleanup
+print("Creating warehouse in secondary workspace...")
+with managed_warehouse(w_target, size=warehouse_size) as wh_id:
     # load all views per catalog
     for cat in catalogs_to_copy:
         filtered_views = all_views.filter(
@@ -122,7 +98,7 @@ try:
                                    repeat(cat),
                                    schemas,
                                    view_names,
-                                   repeat(wh_target.id))
+                                   repeat(wh_id))
 
             for thread in threads:
                 loaded_view_names.append(thread["view_name"])
@@ -145,10 +121,3 @@ try:
      .write.mode("overwrite")
      .format("delta")
      .save(f"{landing_zone_url}/view_sync_status_{ts}"))
-
-finally:
-    try:
-        w_target.warehouses.delete(wh_target.id)
-        print(f"Cleaned up warehouse {wh_target.id}")
-    except Exception as e:
-        print(f"Warning: could not delete warehouse {wh_target.id}: {e}")

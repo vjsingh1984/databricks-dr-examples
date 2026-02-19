@@ -25,7 +25,7 @@
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import catalog
-import pandas as pd
+from dr_sync.csv_mapping import load_mapping, lookup_value
 from common import (target_pat, target_host,
                     source_pat, source_host,
                     cred_mapping_file, loc_mapping_file,
@@ -47,7 +47,7 @@ source_cred_names = [x.name for x in source_creds]
 target_cred_names = [x.name for x in target_creds]
 cred_diff = list(set(source_cred_names) - set(target_cred_names))
 creds_to_create = [x for x in source_creds if x.name in cred_diff]
-cred_df = pd.read_csv(cred_mapping_file, keep_default_na=False)
+cred_df = load_mapping(cred_mapping_file)
 
 if not creds_to_create:
     print("All source credentials exist in target metastore.")
@@ -61,9 +61,8 @@ for cred in creds_to_create:
 
     if cloud_type == "aws":
         # get cred IAM role based off of name
-        try:
-            iam_role_arn = cred_df['target_iam_role'].loc[cred_df['source_cred_name'] == cred_name].iloc[0]
-        except (KeyError, IndexError):
+        iam_role_arn = lookup_value(cred_df, 'source_cred_name', cred_name, 'target_iam_role')
+        if iam_role_arn is None:
             print(f"Could not create credential {cred_name}. Please check mapping file.")
             continue
 
@@ -75,15 +74,13 @@ for cred in creds_to_create:
                                             aws_iam_role=cred_iam_role)
     elif cloud_type == "azure":
         # get SP and Mgd ID info based off of name
-        try:
-            managed_id_connector = \
-                cred_df['target_mgd_id_connector'].loc[cred_df['source_cred_name'] == cred_name].iloc[0]
-            managed_id_identity = \
-                cred_df['target_mgd_id_identity'].loc[cred_df['source_cred_name'] == cred_name].iloc[0]
-            sp_directory = cred_df['target_sp_directory'].loc[cred_df['source_cred_name'] == cred_name].iloc[0]
-            sp_appid = cred_df['target_sp_appid'].loc[cred_df['source_cred_name'] == cred_name].iloc[0]
-            sp_secret = cred_df['target_sp_secret'].loc[cred_df['source_cred_name'] == cred_name].iloc[0]
-        except (KeyError, IndexError):
+        managed_id_connector = lookup_value(cred_df, 'source_cred_name', cred_name, 'target_mgd_id_connector')
+        managed_id_identity = lookup_value(cred_df, 'source_cred_name', cred_name, 'target_mgd_id_identity')
+        sp_directory = lookup_value(cred_df, 'source_cred_name', cred_name, 'target_sp_directory')
+        sp_appid = lookup_value(cred_df, 'source_cred_name', cred_name, 'target_sp_appid')
+        sp_secret = lookup_value(cred_df, 'source_cred_name', cred_name, 'target_sp_secret')
+
+        if managed_id_connector is None and managed_id_identity is None and sp_directory is None:
             print(f"Could not create credential {cred_name}. Please check mapping file.")
             continue
 
@@ -112,7 +109,7 @@ for cred in creds_to_create:
             except Exception:
                 print(f"Could not create credential {cred_name}. Please make sure that only one of \
                 managed_id_connector, managed_id_identity or service_principal info is provided in the mapping.")
-                
+
     elif cloud_type == "gcp":
         print("GCP not yet implemented.")
         continue
@@ -128,7 +125,7 @@ source_extloc_names = [x.name for x in source_extloc]
 target_extloc_names = [x.name for x in target_extloc]
 loc_diff = list(set(source_extloc_names) - set(target_extloc_names))
 locs_to_create = [x for x in source_extloc if x.name in loc_diff]
-loc_df = pd.read_csv(loc_mapping_file, keep_default_na=False)
+loc_df = load_mapping(loc_mapping_file)
 
 if not locs_to_create:
     print("All source external locations exist in target metastore.")
@@ -143,10 +140,10 @@ for loc in locs_to_create:
     print(f"Creating external location {loc_name}...")
 
     if cloud_type == "aws":
-        try:
-            url = loc_df['target_url'].loc[loc_df['source_loc_name'] == loc_name].iloc[0]
-            access_pt = loc_df['target_access_pt'].loc[loc_df['source_loc_name'] == loc_name].iloc[0]
-        except (KeyError, IndexError):
+        url = lookup_value(loc_df, 'source_loc_name', loc_name, 'target_url')
+        access_pt = lookup_value(loc_df, 'source_loc_name', loc_name, 'target_access_pt')
+
+        if url is None:
             print(f"Could not create location {loc_name}. Please check mapping file.")
             continue
 
@@ -166,9 +163,9 @@ for loc in locs_to_create:
                                                read_only=loc_read_only,
                                                url=url)
     elif cloud_type == "azure":
-        try:
-            url = loc_df['target_url'].loc[loc_df['source_loc_name'] == loc_name].iloc[0]
-        except (KeyError, IndexError):
+        url = lookup_value(loc_df, 'source_loc_name', loc_name, 'target_url')
+
+        if url is None:
             print(f"Could not create location {loc_name}. Please check mapping file.")
             continue
 
