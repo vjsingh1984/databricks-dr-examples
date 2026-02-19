@@ -25,7 +25,6 @@
 
 
 import argparse
-import logging
 import os
 import time
 import pandas as pd
@@ -38,7 +37,11 @@ from dr_sync.config import DRSyncConfig
 from dr_sync.log import setup_logging
 
 logger = setup_logging()
-config = DRSyncConfig.from_env() if os.environ.get("DR_SYNC_SOURCE_HOST") else DRSyncConfig.from_common_module()
+config = (
+    DRSyncConfig.from_env()
+    if os.environ.get("DR_SYNC_SOURCE_HOST")
+    else DRSyncConfig.from_common_module()
+)
 target_host = config.target_host
 target_pat = config.target_token
 catalogs_to_copy = config.catalogs_to_copy
@@ -52,29 +55,37 @@ response_backoff = config.response_backoff
 def create_view(w, catalog, schema, view_name, warehouse):
 
     try:
-        view_stmt = spark.sql(f"show create table {catalog}.{schema}.{view_name}").collect()[0]["createtab_stmt"]
+        view_stmt = spark.sql(
+            f"show create table {catalog}.{schema}.{view_name}"
+        ).collect()[0]["createtab_stmt"]
 
         execute_statement_sync(w, warehouse, view_stmt, backoff=response_backoff)
 
-        return {"catalog": catalog,
-                "schema": schema,
-                "view_name": view_name,
-                "status": "SUCCESS",
-                "creation_time": time.time_ns()}
+        return {
+            "catalog": catalog,
+            "schema": schema,
+            "view_name": view_name,
+            "status": "SUCCESS",
+            "creation_time": time.time_ns(),
+        }
 
     except StatementError as e:
-        return {"catalog": catalog,
-                "schema": schema,
-                "view_name": view_name,
-                "status": f"FAIL: {e}",
-                "creation_time": time.time_ns()}
+        return {
+            "catalog": catalog,
+            "schema": schema,
+            "view_name": view_name,
+            "status": f"FAIL: {e}",
+            "creation_time": time.time_ns(),
+        }
 
     except Exception as e:
-        return {"catalog": catalog,
-                "schema": schema,
-                "view_name": view_name,
-                "status": f"FAIL: {e}",
-                "creation_time": time.time_ns()}
+        return {
+            "catalog": catalog,
+            "schema": schema,
+            "view_name": view_name,
+            "status": f"FAIL: {e}",
+            "creation_time": time.time_ns(),
+        }
 
 
 # pull all views from source ws
@@ -94,13 +105,16 @@ if config.dry_run:
     # In dry-run mode, log what would happen without creating warehouses or executing SQL
     for cat in catalogs_to_copy:
         filtered_views = all_views.filter(
-            (all_views.table_catalog == cat) &
-            (all_views.table_schema != "information_schema")).collect()
+            (all_views.table_catalog == cat)
+            & (all_views.table_schema != "information_schema")
+        ).collect()
 
-        schemas = [row['table_schema'] for row in filtered_views]
-        view_names = [row['table_name'] for row in filtered_views]
+        schemas = [row["table_schema"] for row in filtered_views]
+        view_names = [row["table_name"] for row in filtered_views]
 
-        logger.info("[DRY RUN] Would create %d views in catalog %s", len(view_names), cat)
+        logger.info(
+            "[DRY RUN] Would create %d views in catalog %s", len(view_names), cat
+        )
         for schema, view_name in zip(schemas, view_names):
             logger.info("[DRY RUN] Would create view %s.%s.%s", cat, schema, view_name)
 else:
@@ -110,20 +124,23 @@ else:
         # load all views per catalog
         for cat in catalogs_to_copy:
             filtered_views = all_views.filter(
-                (all_views.table_catalog == cat) &
-                (all_views.table_schema != "information_schema")).collect()
+                (all_views.table_catalog == cat)
+                & (all_views.table_schema != "information_schema")
+            ).collect()
 
             # get schemas and view names
-            schemas = [row['table_schema'] for row in filtered_views]
-            view_names = [row['table_name'] for row in filtered_views]
+            schemas = [row["table_schema"] for row in filtered_views]
+            view_names = [row["table_name"] for row in filtered_views]
 
             with ThreadPoolExecutor(max_workers=num_exec) as executor:
-                threads = executor.map(create_view,
-                                       repeat(w_target),
-                                       repeat(cat),
-                                       schemas,
-                                       view_names,
-                                       repeat(wh_id))
+                threads = executor.map(
+                    create_view,
+                    repeat(w_target),
+                    repeat(cat),
+                    schemas,
+                    view_names,
+                    repeat(wh_id),
+                )
 
                 for thread in threads:
                     loaded_view_names.append(thread["view_name"])
@@ -131,27 +148,48 @@ else:
                     loaded_view_catalogs.append(thread["catalog"])
                     loaded_view_status.append(thread["status"])
                     loaded_view_times.append(thread["creation_time"])
-                    logger.info("Loaded view %s.%s.%s.", thread["catalog"], thread["schema"], thread["view_name"])
+                    logger.info(
+                        "Loaded view %s.%s.%s.",
+                        thread["catalog"],
+                        thread["schema"],
+                        thread["view_name"],
+                    )
 
         # create the table statuses as a df and write to a table in dr target
-        status_df = pd.DataFrame({"catalog": loaded_view_catalogs,
-                                  "schema": loaded_view_schemas,
-                                  "table": loaded_view_names,
-                                  "status": loaded_view_status,
-                                  "sync_time": loaded_view_times})
+        status_df = pd.DataFrame(
+            {
+                "catalog": loaded_view_catalogs,
+                "schema": loaded_view_schemas,
+                "table": loaded_view_names,
+                "status": loaded_view_status,
+                "sync_time": loaded_view_times,
+            }
+        )
 
         # table will get a specific timestamp-based location per run
         ts = time.time_ns()
-        (spark.createDataFrame(status_df)
-         .write.mode("overwrite")
-         .format("delta")
-         .save(f"{landing_zone_url}/view_sync_status_{ts}"))
+        (
+            spark.createDataFrame(status_df)
+            .write.mode("overwrite")
+            .format("delta")
+            .save(f"{landing_zone_url}/view_sync_status_{ts}")
+        )
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Sync views between primary and secondary Databricks workspaces")
-    parser.add_argument("--dry-run", action="store_true", help="Show planned operations without executing")
-    parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-                        help="Set logging level")
+    parser = argparse.ArgumentParser(
+        description="Sync views between primary and secondary Databricks workspaces"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show planned operations without executing",
+    )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Set logging level",
+    )
     args = parser.parse_args()
     config.dry_run = args.dry_run
     logger = setup_logging(level=args.log_level)

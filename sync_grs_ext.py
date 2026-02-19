@@ -24,20 +24,27 @@
 
 
 import argparse
-import logging
 import os
 import time
 import pandas as pd
 from itertools import repeat
 from databricks.sdk import WorkspaceClient
 from concurrent.futures import ThreadPoolExecutor
-from dr_sync.sql_utils import execute_statement_sync, managed_warehouse, drop_table_if_exists
+from dr_sync.sql_utils import (
+    execute_statement_sync,
+    managed_warehouse,
+    drop_table_if_exists,
+)
 from dr_sync.exceptions import StatementError
 from dr_sync.config import DRSyncConfig
 from dr_sync.log import setup_logging
 
 logger = setup_logging()
-config = DRSyncConfig.from_env() if os.environ.get("DR_SYNC_SOURCE_HOST") else DRSyncConfig.from_common_module()
+config = (
+    DRSyncConfig.from_env()
+    if os.environ.get("DR_SYNC_SOURCE_HOST")
+    else DRSyncConfig.from_common_module()
+)
 target_host = config.target_host
 target_pat = config.target_token
 catalogs_to_copy = config.catalogs_to_copy
@@ -56,28 +63,34 @@ def load_table(w, catalog, schema, table_name, location, warehouse):
         sqlstring = f"CREATE TABLE {catalog}.{schema}.{table_name} USING delta LOCATION '{location}'"
         execute_statement_sync(w, warehouse, sqlstring, backoff=response_backoff)
 
-        return {"catalog": catalog,
-                "schema": schema,
-                "table_name": table_name,
-                "location": location,
-                "status": "SUCCESS",
-                "creation_time": time.time_ns()}
+        return {
+            "catalog": catalog,
+            "schema": schema,
+            "table_name": table_name,
+            "location": location,
+            "status": "SUCCESS",
+            "creation_time": time.time_ns(),
+        }
 
     except StatementError as e:
-        return {"catalog": catalog,
-                "schema": schema,
-                "table_name": table_name,
-                "location": location,
-                "status": f"FAIL: {e}",
-                "creation_time": time.time_ns()}
+        return {
+            "catalog": catalog,
+            "schema": schema,
+            "table_name": table_name,
+            "location": location,
+            "status": f"FAIL: {e}",
+            "creation_time": time.time_ns(),
+        }
 
     except Exception as e:
-        return {"catalog": catalog,
-                "schema": schema,
-                "table_name": table_name,
-                "location": location,
-                "status": f"FAIL: {e}",
-                "creation_time": time.time_ns()}
+        return {
+            "catalog": catalog,
+            "schema": schema,
+            "table_name": table_name,
+            "location": location,
+            "status": f"FAIL: {e}",
+            "creation_time": time.time_ns(),
+        }
 
 
 # initialize lists for status tracking
@@ -94,63 +107,91 @@ w_target = WorkspaceClient(host=target_host, token=target_pat)
 if config.dry_run:
     # In dry-run mode, log what would happen without creating warehouses or executing SQL
     for cat in catalogs_to_copy:
-        filtered_tables = spark.sql(f"""
+        filtered_tables = spark.sql(
+            f"""
             SELECT table_schema, table_name, storage_path
             FROM system.information_schema.tables
             WHERE table_catalog = '{cat}'
               AND table_schema != 'information_schema'
               AND table_type = 'EXTERNAL'
-        """).collect()
+        """
+        ).collect()
 
-        schemas = [row['table_schema'] for row in filtered_tables]
-        table_names = [row['table_name'] for row in filtered_tables]
-        table_locs = [row['storage_path'] for row in filtered_tables]
+        schemas = [row["table_schema"] for row in filtered_tables]
+        table_names = [row["table_name"] for row in filtered_tables]
+        table_locs = [row["storage_path"] for row in filtered_tables]
 
-        logger.info("[DRY RUN] Would process %d external tables in catalog %s", len(table_names), cat)
+        logger.info(
+            "[DRY RUN] Would process %d external tables in catalog %s",
+            len(table_names),
+            cat,
+        )
         for schema, table_name, location in zip(schemas, table_names, table_locs):
-            logger.info("[DRY RUN] Would drop and recreate external table %s.%s.%s at %s", cat, schema, table_name, location)
+            logger.info(
+                "[DRY RUN] Would drop and recreate external table %s.%s.%s at %s",
+                cat,
+                schema,
+                table_name,
+                location,
+            )
 else:
     # create warehouse to run table creation statements, guaranteed cleanup
     with managed_warehouse(w_target, size=warehouse_size) as wh_id:
         # loop through all catalogs to copy, then copy all tables excluding system tables.
         # we also skip views; these need to be created separately since they cannot be cloned.
         for cat in catalogs_to_copy:
-            filtered_tables = spark.sql(f"""
+            filtered_tables = spark.sql(
+                f"""
                 SELECT table_schema, table_name, storage_path
                 FROM system.information_schema.tables
                 WHERE table_catalog = '{cat}'
                   AND table_schema != 'information_schema'
                   AND table_type = 'EXTERNAL'
-            """).collect()
+            """
+            ).collect()
 
             # get schemas, tables and types in list form
-            schemas = [row['table_schema'] for row in filtered_tables]
-            table_names = [row['table_name'] for row in filtered_tables]
-            table_locs = [row['storage_path'] for row in filtered_tables]
+            schemas = [row["table_schema"] for row in filtered_tables]
+            table_names = [row["table_name"] for row in filtered_tables]
+            table_locs = [row["storage_path"] for row in filtered_tables]
 
             with ThreadPoolExecutor(max_workers=num_exec) as executor:
-                threads = executor.map(drop_table_if_exists,
-                                       repeat(w_target),
-                                       repeat(wh_id),
-                                       repeat(cat),
-                                       schemas,
-                                       table_names)
+                threads = executor.map(
+                    drop_table_if_exists,
+                    repeat(w_target),
+                    repeat(wh_id),
+                    repeat(cat),
+                    schemas,
+                    table_names,
+                )
 
                 for thread in threads:
                     if thread["status"]:
-                        logger.info("Dropped table %s.%s.%s.", thread["catalog"], thread["schema"], thread["table_name"])
+                        logger.info(
+                            "Dropped table %s.%s.%s.",
+                            thread["catalog"],
+                            thread["schema"],
+                            thread["table_name"],
+                        )
                     else:
-                        logger.error("Error dropping table %s.%s.%s.", thread["catalog"], thread["schema"], thread["table_name"])
+                        logger.error(
+                            "Error dropping table %s.%s.%s.",
+                            thread["catalog"],
+                            thread["schema"],
+                            thread["table_name"],
+                        )
 
             # use ThreadPool to copy tables in parallel
             with ThreadPoolExecutor(max_workers=num_exec) as executor:
-                threads = executor.map(load_table,
-                                       repeat(w_target),
-                                       repeat(cat),
-                                       schemas,
-                                       table_names,
-                                       table_locs,
-                                       repeat(wh_id))
+                threads = executor.map(
+                    load_table,
+                    repeat(w_target),
+                    repeat(cat),
+                    schemas,
+                    table_names,
+                    table_locs,
+                    repeat(wh_id),
+                )
 
                 # wait for threads to execute and build lists for status table
                 for thread in threads:
@@ -160,27 +201,48 @@ else:
                     loaded_table_locations.append(thread["location"])
                     loaded_table_status.append(thread["status"])
                     loaded_table_times.append(thread["creation_time"])
-                    logger.info("Loaded table %s.%s.%s.", thread["catalog"], thread["schema"], thread["table_name"])
+                    logger.info(
+                        "Loaded table %s.%s.%s.",
+                        thread["catalog"],
+                        thread["schema"],
+                        thread["table_name"],
+                    )
 
         # create the table statuses as a df and write to a table in dr target
-        status_df = pd.DataFrame({"catalog": loaded_table_catalogs,
-                                  "schema": loaded_table_schemas,
-                                  "table": loaded_table_names,
-                                  "location": loaded_table_locations,
-                                  "status": loaded_table_status,
-                                  "create_time": loaded_table_times})
+        status_df = pd.DataFrame(
+            {
+                "catalog": loaded_table_catalogs,
+                "schema": loaded_table_schemas,
+                "table": loaded_table_names,
+                "location": loaded_table_locations,
+                "status": loaded_table_status,
+                "create_time": loaded_table_times,
+            }
+        )
 
         # table will get a specific timestamp-based location per run
-        (spark.createDataFrame(status_df)
-         .write.mode("overwrite")
-         .format("delta")
-         .save(f"{landing_zone_url}/sync_status_{time.time_ns()}"))
+        (
+            spark.createDataFrame(status_df)
+            .write.mode("overwrite")
+            .format("delta")
+            .save(f"{landing_zone_url}/sync_status_{time.time_ns()}")
+        )
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Sync GRS-replicated external tables to secondary Databricks workspace")
-    parser.add_argument("--dry-run", action="store_true", help="Show planned operations without executing")
-    parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-                        help="Set logging level")
+    parser = argparse.ArgumentParser(
+        description="Sync GRS-replicated external tables to secondary Databricks workspace"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show planned operations without executing",
+    )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Set logging level",
+    )
     args = parser.parse_args()
     config.dry_run = args.dry_run
     logger = setup_logging(level=args.log_level)

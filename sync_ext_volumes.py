@@ -17,7 +17,6 @@
 
 
 import argparse
-import logging
 import os
 from itertools import repeat
 from databricks.sdk import WorkspaceClient
@@ -27,7 +26,11 @@ from databricks.sdk.errors.platform import ResourceAlreadyExists
 from dr_sync.config import DRSyncConfig
 from dr_sync.log import setup_logging
 
-config = DRSyncConfig.from_env() if os.environ.get("DR_SYNC_SOURCE_HOST") else DRSyncConfig.from_common_module()
+config = (
+    DRSyncConfig.from_env()
+    if os.environ.get("DR_SYNC_SOURCE_HOST")
+    else DRSyncConfig.from_common_module()
+)
 logger = setup_logging()
 target_host = config.target_host
 target_pat = config.target_token
@@ -39,32 +42,52 @@ num_exec = config.num_exec
 
 # helper function to create volumes and set appropriate owner
 def create_volume(w, catalog_name, schema_name, volume_name, location, owner):
-    logger.info("Creating volume %s in %s.%s...", volume_name, catalog_name, schema_name)
+    logger.info(
+        "Creating volume %s in %s.%s...", volume_name, catalog_name, schema_name
+    )
 
     # dry-run guard: log what would be created without executing
     if config.dry_run:
-        logger.info("[DRY RUN] Would create volume %s in %s.%s", volume_name, catalog_name, schema_name)
-        return {"volume": f"{catalog_name}.{schema_name}.{volume_name}", "status": "dry_run"}
+        logger.info(
+            "[DRY RUN] Would create volume %s in %s.%s",
+            volume_name,
+            catalog_name,
+            schema_name,
+        )
+        return {
+            "volume": f"{catalog_name}.{schema_name}.{volume_name}",
+            "status": "dry_run",
+        }
 
     # try creating new volume
     try:
-        volume = w.volumes.create(catalog_name=catalog_name,
-                                  schema_name=schema_name,
-                                  name=volume_name,
-                                  storage_location=location,
-                                  volume_type=catalog.VolumeType.EXTERNAL)
+        volume = w.volumes.create(
+            catalog_name=catalog_name,
+            schema_name=schema_name,
+            name=volume_name,
+            storage_location=location,
+            volume_type=catalog.VolumeType.EXTERNAL,
+        )
 
         _ = w.volumes.update(name=volume.full_name, owner=owner)
         return {"volume": volume.full_name, "status": "success"}
 
     # if volume already exists, just update the owner (in case it has changed)
     except ResourceAlreadyExists:
-        _ = w.volumes.update(name=f"{catalog_name}.{schema_name}.{volume_name}", owner=owner)
-        return {"volume": f"{catalog_name}.{schema_name}.{volume_name}", "status": "already_exists"}
+        _ = w.volumes.update(
+            name=f"{catalog_name}.{schema_name}.{volume_name}", owner=owner
+        )
+        return {
+            "volume": f"{catalog_name}.{schema_name}.{volume_name}",
+            "status": "already_exists",
+        }
 
     # for any other exception, return the error
     except Exception as e:
-        return {"volume": f"{catalog_name}.{schema_name}.{volume_name}", "status": f"ERROR: {e}"}
+        return {
+            "volume": f"{catalog_name}.{schema_name}.{volume_name}",
+            "status": f"ERROR: {e}",
+        }
 
 
 # create the WorkspaceClient pointed at the target WS
@@ -80,38 +103,57 @@ system_info = spark.sql("SELECT * FROM system.information_schema.volumes")
 # but the owner has changed.
 for cat in catalogs_to_copy:
     filtered_volumes = system_info.filter(
-        (system_info.volume_catalog == cat) &
-        (system_info.volume_schema != "information_schema") &
-        (system_info.volume_type == "EXTERNAL")).collect()
+        (system_info.volume_catalog == cat)
+        & (system_info.volume_schema != "information_schema")
+        & (system_info.volume_type == "EXTERNAL")
+    ).collect()
 
     # get schemas, tables and locations in list form
-    schema_names = [row['volume_schema'] for row in filtered_volumes]
-    volume_names = [row['volume_name'] for row in filtered_volumes]
-    volume_locs = [row['storage_location'] for row in filtered_volumes]
-    volume_owners = [row['volume_owner'] for row in filtered_volumes]
+    schema_names = [row["volume_schema"] for row in filtered_volumes]
+    volume_names = [row["volume_name"] for row in filtered_volumes]
+    volume_locs = [row["storage_location"] for row in filtered_volumes]
+    volume_owners = [row["volume_owner"] for row in filtered_volumes]
 
     with ThreadPoolExecutor(max_workers=num_exec) as executor:
-        threads = executor.map(create_volume,
-                               repeat(w_target),
-                               repeat(cat),
-                               schema_names,
-                               volume_names,
-                               volume_locs,
-                               volume_owners)
+        threads = executor.map(
+            create_volume,
+            repeat(w_target),
+            repeat(cat),
+            schema_names,
+            volume_names,
+            volume_locs,
+            volume_owners,
+        )
 
         for thread in threads:
             if thread["status"] == "success":
                 logger.info("Created volume %s.", thread["volume"])
             elif thread["status"] == "already_exists":
-                logger.warning("Skipped volume %s because it already exists.", thread["volume"])
+                logger.warning(
+                    "Skipped volume %s because it already exists.", thread["volume"]
+                )
             else:
-                logger.error("Could not create volume %s; error: %s", thread["volume"], thread["status"])
+                logger.error(
+                    "Could not create volume %s; error: %s",
+                    thread["volume"],
+                    thread["status"],
+                )
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Sync external volumes between workspaces")
-    parser.add_argument("--dry-run", action="store_true", help="Show planned operations without executing")
-    parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-                        help="Set logging level")
+    parser = argparse.ArgumentParser(
+        description="Sync external volumes between workspaces"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show planned operations without executing",
+    )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Set logging level",
+    )
     args = parser.parse_args()
     config.dry_run = args.dry_run
     logger = setup_logging(level=args.log_level)

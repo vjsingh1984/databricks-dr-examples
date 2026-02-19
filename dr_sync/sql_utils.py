@@ -4,8 +4,6 @@ import logging
 import time
 from contextlib import contextmanager
 
-logger = logging.getLogger("dr_sync")
-
 from databricks.sdk.service.sql import (
     Disposition,
     StatementState,
@@ -16,8 +14,12 @@ from databricks.sdk.service import sql as dbsql
 
 from dr_sync.exceptions import StatementError, WarehouseError
 
+logger = logging.getLogger("dr_sync")
 
-def execute_statement_sync(client, warehouse_id, statement, backoff=0.5, timeout_seconds=3600):
+
+def execute_statement_sync(
+    client, warehouse_id, statement, backoff=0.5, timeout_seconds=3600
+):
     """Execute a SQL statement and poll until completion.
 
     Args:
@@ -101,7 +103,9 @@ def managed_warehouse(client, size="Small", name_prefix="sdk"):
             logger.warning("Could not delete warehouse %s: %s", wh.id, e)
 
 
-def drop_table_if_exists(client, warehouse_id, catalog, schema, table_name, backoff=0.5):
+def drop_table_if_exists(
+    client, warehouse_id, catalog, schema, table_name, backoff=0.5
+):
     """Drop a table if it exists via SQL statement execution.
 
     Returns:
@@ -112,10 +116,21 @@ def drop_table_if_exists(client, warehouse_id, catalog, schema, table_name, back
 
     try:
         execute_statement_sync(
-            client, warehouse_id,
+            client,
+            warehouse_id,
             f"DROP TABLE IF EXISTS {fqn}",
             backoff=backoff,
         )
-        return {"status": 1, "catalog": catalog, "schema": schema, "table_name": table_name}
+        return {
+            "status": 1,
+            "catalog": catalog,
+            "schema": schema,
+            "table_name": table_name,
+        }
     except Exception:
-        return {"status": 0, "catalog": catalog, "schema": schema, "table_name": table_name}
+        return {
+            "status": 0,
+            "catalog": catalog,
+            "schema": schema,
+            "table_name": table_name,
+        }

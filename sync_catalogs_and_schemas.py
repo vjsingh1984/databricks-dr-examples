@@ -16,16 +16,18 @@
 # each workspace. You can update this to use other auth methods if desired.
 
 import argparse
-import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
-from itertools import repeat
 from databricks.sdk import WorkspaceClient
 from dr_sync.csv_mapping import load_mapping
 from dr_sync.config import DRSyncConfig
 from dr_sync.log import setup_logging
 
-config = DRSyncConfig.from_env() if os.environ.get("DR_SYNC_SOURCE_HOST") else DRSyncConfig.from_common_module()
+config = (
+    DRSyncConfig.from_env()
+    if os.environ.get("DR_SYNC_SOURCE_HOST")
+    else DRSyncConfig.from_common_module()
+)
 logger = setup_logging()
 target_host = config.target_host
 target_pat = config.target_token
@@ -51,7 +53,7 @@ target_catalog_names = [x.name for x in target_catalogs]
 catalog_diff = list(set(source_catalog_names) - set(target_catalog_names))
 catalogs_to_create = [x for x in source_catalogs if x.name in catalog_diff]
 catalog_df = load_mapping(catalog_mapping_file)
-catalog_lookup = catalog_df.set_index('source_catalog').to_dict('index')
+catalog_lookup = catalog_df.set_index("source_catalog").to_dict("index")
 
 if not catalogs_to_create:
     logger.info("All source catalogs exist in target metastore.")
@@ -61,7 +63,8 @@ for catalog in catalogs_to_create:
     if catalog.connection_name or catalog.share_name:
         logger.warning(
             "External Catalogs and Shared Catalogs are not currently supported by this script. "
-            "Skipping %s...", catalog.name
+            "Skipping %s...",
+            catalog.name,
         )
         continue
 
@@ -76,9 +79,11 @@ for catalog in catalogs_to_create:
     # get target storage root based off of catalog name
     row = catalog_lookup.get(catalog_name)
     if row is None:
-        logger.error("Could not create catalog %s. Please check mapping file.", catalog_name)
+        logger.error(
+            "Could not create catalog %s. Please check mapping file.", catalog_name
+        )
         continue
-    storage_root = row['target_storage_root']
+    storage_root = row["target_storage_root"]
 
     # create catalog in target metastore
     if config.dry_run:
@@ -86,16 +91,20 @@ for catalog in catalogs_to_create:
         continue
 
     if storage_root:
-        w_target.catalogs.create(name=catalog_name,
-                                 comment=catalog_comment,
-                                 options=catalog_options,
-                                 properties=catalog_properties,
-                                 storage_root=storage_root)
+        w_target.catalogs.create(
+            name=catalog_name,
+            comment=catalog_comment,
+            options=catalog_options,
+            properties=catalog_properties,
+            storage_root=storage_root,
+        )
     else:
-        w_target.catalogs.create(name=catalog_name,
-                                 comment=catalog_comment,
-                                 options=catalog_options,
-                                 properties=catalog_properties)
+        w_target.catalogs.create(
+            name=catalog_name,
+            comment=catalog_comment,
+            options=catalog_options,
+            properties=catalog_properties,
+        )
 
     logger.info("Created catalog %s.", catalog_name)
 
@@ -103,7 +112,7 @@ schema_df = load_mapping(schema_mapping_file)
 # Build a lookup keyed by (source_catalog, source_schema) for O(1) access
 schema_lookup = {}
 for _, srow in schema_df.iterrows():
-    key = (srow['source_catalog'], srow['source_schema'])
+    key = (srow["source_catalog"], srow["source_schema"])
     schema_lookup[key] = srow.to_dict()
 
 
@@ -115,16 +124,20 @@ def create_schema(catalog_name, schema_obj, storage_root):
 
     try:
         if storage_root:
-            w_target.schemas.create(name=schema_name,
-                                    comment=schema_comment,
-                                    properties=schema_properties,
-                                    catalog_name=catalog_name,
-                                    storage_root=storage_root)
+            w_target.schemas.create(
+                name=schema_name,
+                comment=schema_comment,
+                properties=schema_properties,
+                catalog_name=catalog_name,
+                storage_root=storage_root,
+            )
         else:
-            w_target.schemas.create(name=schema_name,
-                                    comment=schema_comment,
-                                    properties=schema_properties,
-                                    catalog_name=catalog_name)
+            w_target.schemas.create(
+                name=schema_name,
+                comment=schema_comment,
+                properties=schema_properties,
+                catalog_name=catalog_name,
+            )
         logger.info("Created schema %s.%s.", catalog_name, schema_name)
     except Exception as e:
         logger.error("Error creating schema %s.%s: %s", catalog_name, schema_name, e)
@@ -143,10 +156,14 @@ for cat in source_catalogs:
     for schema in schemas_to_create:
         row = schema_lookup.get((cat.name, schema.name))
         if row is None:
-            logger.error("Could not create schema %s.%s. Please check mapping file.", cat.name, schema.name)
+            logger.error(
+                "Could not create schema %s.%s. Please check mapping file.",
+                cat.name,
+                schema.name,
+            )
             continue
 
-        storage_root = row['target_storage_root']
+        storage_root = row["target_storage_root"]
 
         if config.dry_run:
             logger.info("[DRY RUN] Would create schema %s.%s", cat.name, schema.name)
@@ -163,10 +180,20 @@ if schema_tasks:
         list(executor.map(create_schema, catalog_names, schema_objs, storage_roots))
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Sync catalogs and schemas between workspaces")
-    parser.add_argument("--dry-run", action="store_true", help="Show planned operations without executing")
-    parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-                        help="Set logging level")
+    parser = argparse.ArgumentParser(
+        description="Sync catalogs and schemas between workspaces"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show planned operations without executing",
+    )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Set logging level",
+    )
     args = parser.parse_args()
     config.dry_run = args.dry_run
     logger = setup_logging(level=args.log_level)

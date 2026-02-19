@@ -32,8 +32,7 @@ def load_mapping(filepath, required_columns=None):
         missing = set(required_columns) - set(df.columns)
         if missing:
             raise MappingError(
-                filepath, "", "",
-                f"Missing required columns in {filepath}: {missing}"
+                filepath, "", "", f"Missing required columns in {filepath}: {missing}"
             )
 
     return df
@@ -64,7 +63,9 @@ def validate_catalog_mapping(filepath):
         List of error strings (empty = valid).
     """
     errors = []
-    df = load_mapping(filepath, required_columns=["source_catalog", "target_storage_root"])
+    df = load_mapping(
+        filepath, required_columns=["source_catalog", "target_storage_root"]
+    )
     dupes = df[df.duplicated(subset=["source_catalog"], keep=False)]
     if not dupes.empty:
         dupe_names = dupes["source_catalog"].unique().tolist()
@@ -80,7 +81,9 @@ def validate_cred_mapping(filepath, cloud_type):
     """
     errors = []
     if cloud_type == "aws":
-        df = load_mapping(filepath, required_columns=["source_cred_name", "target_iam_role"])
+        df = load_mapping(
+            filepath, required_columns=["source_cred_name", "target_iam_role"]
+        )
         empty_roles = df[df["target_iam_role"] == ""]
         if not empty_roles.empty:
             names = empty_roles["source_cred_name"].tolist()
