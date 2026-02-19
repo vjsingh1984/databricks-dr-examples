@@ -15,12 +15,19 @@
 # Currently, we use PAT-based auth for the WorkspaceClient objects, so you must provide the host and token manually for
 # each workspace. You can update this to use other auth methods if desired.
 
+import os
 from databricks.sdk import WorkspaceClient
 from dr_sync.csv_mapping import load_mapping, lookup_value
-from common import (target_pat, target_host,
-                    source_pat, source_host,
-                    catalogs_to_copy, catalog_mapping_file,
-                    schema_mapping_file)
+from dr_sync.config import DRSyncConfig
+
+config = DRSyncConfig.from_env() if os.environ.get("DR_SYNC_SOURCE_HOST") else DRSyncConfig.from_common_module()
+target_host = config.target_host
+target_pat = config.target_token
+source_host = config.source_host
+source_pat = config.source_token
+catalogs_to_copy = config.catalogs_to_copy
+catalog_mapping_file = config.catalog_mapping_file
+schema_mapping_file = config.schema_mapping_file
 
 
 # create WorkspaceClient objects

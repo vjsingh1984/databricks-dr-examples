@@ -20,6 +20,7 @@
 #   -num_exec: the number of threads to spawn in the ThreadPoolExecutor.
 #   -target_share_id: the sharing identifier of the secondary metastore.
 
+import os
 import time
 import pandas as pd
 from itertools import repeat
@@ -32,11 +33,19 @@ from databricks.sdk.service.sharing import (AuthenticationType, SharedDataObject
                                             SharedDataObjectDataObjectType, SharedDataObjectStatus)
 from dr_sync.sql_utils import execute_statement_sync, managed_warehouse
 from dr_sync.exceptions import StatementError
-from common import (target_pat, target_host,
-                    source_pat, source_host,
-                    catalogs_to_copy, num_exec,
-                    landing_zone_url, warehouse_size,
-                    response_backoff, metastore_id)
+from dr_sync.config import DRSyncConfig
+
+config = DRSyncConfig.from_env() if os.environ.get("DR_SYNC_SOURCE_HOST") else DRSyncConfig.from_common_module()
+target_host = config.target_host
+target_pat = config.target_token
+source_host = config.source_host
+source_pat = config.source_token
+catalogs_to_copy = config.catalogs_to_copy
+num_exec = config.num_exec
+landing_zone_url = config.landing_zone_url
+warehouse_size = config.warehouse_size
+response_backoff = config.response_backoff
+metastore_id = config.metastore_id
 
 
 # helper function to clone a table from one catalog to another

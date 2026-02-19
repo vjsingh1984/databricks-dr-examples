@@ -27,6 +27,7 @@
 # warehouse. Table load statuses will be written to the delta table at {landing_zone_url}/sync_status_{time.time_ns()}.
 
 
+import os
 import time
 import pandas as pd
 from itertools import repeat
@@ -34,11 +35,19 @@ from databricks.sdk import WorkspaceClient
 from concurrent.futures import ThreadPoolExecutor
 from dr_sync.sql_utils import execute_statement_sync, managed_warehouse, drop_table_if_exists
 from dr_sync.exceptions import StatementError
-from common import (target_pat, target_host,
-                    source_pat, source_host,
-                    catalogs_to_copy, num_exec,
-                    landing_zone_url, warehouse_size,
-                    response_backoff, manifest_name)
+from dr_sync.config import DRSyncConfig
+
+config = DRSyncConfig.from_env() if os.environ.get("DR_SYNC_SOURCE_HOST") else DRSyncConfig.from_common_module()
+target_host = config.target_host
+target_pat = config.target_token
+source_host = config.source_host
+source_pat = config.source_token
+catalogs_to_copy = config.catalogs_to_copy
+num_exec = config.num_exec
+landing_zone_url = config.landing_zone_url
+warehouse_size = config.warehouse_size
+response_backoff = config.response_backoff
+manifest_name = config.manifest_name
 
 
 # helper function to copy tables

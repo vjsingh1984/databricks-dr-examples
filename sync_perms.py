@@ -17,14 +17,21 @@
 #   -catalogs_to_copy: a list of the catalogs to be replicated between workspaces.
 #   -num_exec: the number of threads to spawn in the ThreadPoolExecutor.
 
+import os
 from itertools import repeat
 from databricks.sdk.service import catalog
 from databricks.sdk import WorkspaceClient
 from concurrent.futures import ThreadPoolExecutor
 from databricks.sdk.errors.platform import NotFound
-from common import (target_pat, target_host,
-                    source_pat, source_host,
-                    catalogs_to_copy, num_exec)
+from dr_sync.config import DRSyncConfig
+
+config = DRSyncConfig.from_env() if os.environ.get("DR_SYNC_SOURCE_HOST") else DRSyncConfig.from_common_module()
+target_host = config.target_host
+target_pat = config.target_token
+source_host = config.source_host
+source_pat = config.source_token
+catalogs_to_copy = config.catalogs_to_copy
+num_exec = config.num_exec
 
 
 # helper function to update object grants between source and target WS

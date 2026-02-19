@@ -12,6 +12,7 @@ from dr_sync.sql_utils import execute_statement_sync, managed_warehouse, drop_ta
 from dr_sync.workspace import create_client
 from dr_sync.csv_mapping import load_mapping, lookup_value
 from dr_sync.thread_utils import parallel_map, ProgressCounter
+from dr_sync.config import DRSyncConfig
 
 __all__ = [
     "DRSyncError",
@@ -28,4 +29,5 @@ __all__ = [
     "lookup_value",
     "parallel_map",
     "ProgressCounter",
+    "DRSyncConfig",
 ]

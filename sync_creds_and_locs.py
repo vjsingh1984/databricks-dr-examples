@@ -23,13 +23,20 @@
 # cloud object information in the provided CSVs, especially for Azure; this could be done by directly interfacing with
 # the cloud provider CLI/APIs within this script (or as part of an external workflow).
 
+import os
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import catalog
 from dr_sync.csv_mapping import load_mapping, lookup_value
-from common import (target_pat, target_host,
-                    source_pat, source_host,
-                    cred_mapping_file, loc_mapping_file,
-                    cloud_type)
+from dr_sync.config import DRSyncConfig
+
+config = DRSyncConfig.from_env() if os.environ.get("DR_SYNC_SOURCE_HOST") else DRSyncConfig.from_common_module()
+target_host = config.target_host
+target_pat = config.target_token
+source_host = config.source_host
+source_pat = config.source_token
+cred_mapping_file = config.cred_mapping_file
+loc_mapping_file = config.loc_mapping_file
+cloud_type = config.cloud_type
 
 # create WorkspaceClient objects
 w_source = WorkspaceClient(host=source_host, token=source_pat)
