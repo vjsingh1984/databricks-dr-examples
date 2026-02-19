@@ -1,9 +1,79 @@
-# databricks-dr-examples
-A collection of minimal example scripts for setting up Disaster Recovery for Databricks.
+# Databricks Disaster Recovery (DR) Sync Tools
 
-This code is provided as-is and is meant to serve as a set of baseline examples. You may need to alter these scripts to work in your environment.
+Collection of scripts for syncing Unity Catalog resources between Databricks workspaces for Disaster Recovery purposes.
 
-### Notes on cross-workspace connectivity
+## Overview
+
+This repository provides production-ready scripts for replicating Unity Catalog resources between Databricks workspaces. It supports:
+
+- **Data sync**: Tables, views, volumes, models, external locations, storage credentials
+- **Metadata sync**: Permissions, schemas, catalogs, cluster policies, instance pools
+- **Workspace sync**: Jobs, workflows, notebooks, secret scopes
+- **AWS support**: IAM roles, S3 cross-region replication, instance profiles, Secrets Manager
+- **Safety features**: Dry-run mode, checkpointing/resume, structured logging, CSV validation
+
+## New Features
+
+### Unified CLI
+
+All sync scripts now support a unified CLI interface:
+
+```bash
+# Run all sync modules in dependency order
+dr-sync run --all
+
+# Run specific modules
+dr-sync run catalogs tables views jobs
+
+# Dry-run to preview changes
+dr-sync run --all --dry-run
+
+# Selective filtering
+dr-sync run --all --include "prod.*.*" --exclude "*.staging.*"
+
+# Resume from last checkpoint
+dr-sync run --all --resume
+
+# Checkpoint management
+dr-sync checkpoint list
+dr-sync checkpoint clear jobs
+
+# List available sync modules
+dr-sync list
+```
+
+### Checkpoint/Resume
+
+Long-running sync operations can now be resumed after failures. Completed items are tracked in `.dr_sync_state/` and skipped on subsequent runs with `--resume`.
+
+### Structured Logging
+
+All scripts use Python logging with configurable levels (`DEBUG`, `INFO`, `WARNING`, `ERROR`). Output includes timestamps and log levels for production monitoring.
+
+### Environment Variable Configuration
+
+Alternative to `common.py`, use environment variables with the `DR_SYNC_*` prefix:
+
+```bash
+export DR_SYNC_SOURCE_HOST=https://primary.cloud.databricks.com
+export DR_SYNC_SOURCE_TOKEN=dapi...
+export DR_SYNC_TARGET_HOST=https://secondary.cloud.databricks.com
+export DR_SYNC_TARGET_TOKEN=dapi...
+export DR_SYNC_CATALOGS_TO_COPY="prod_catalog,analytics_catalog"
+
+python sync_tables.py --dry-run
+```
+
+### Test Suite
+
+Install with development dependencies to run the test suite:
+
+```bash
+make install-dev
+pytest
+```
+
+Currently 40 unit tests with 53% code coverage.
 These scripts generally assume that they will be run on a notebook in the primary workspace, and that the workspace can directly access the secondary workspace via SDK; this may not always be true in your environment. You have two options if connectivity issues are preventing scripts from running:
 - Alter the workspace networking to allow connectivity; this may involve adjusting firewalls, adding peering, etc.
 - Run the scripts remotely using Databricks Connect
@@ -162,3 +232,122 @@ python sync_ext_volumes.py
 ```
 python sync_views.py
 ```
+
+### Syncing Jobs and Workflows
+
+1. Make sure `common.py` is updated with all relevant parameters
+
+2. Once you have updated the configuration, you can run the script with the following command:
+
+```bash
+python sync_jobs.py
+```
+
+This syncs job definitions (tasks, clusters, schedules) from source to target workspace. Use `--dry-run` to preview.
+
+### Syncing Cluster Policies
+
+1. Make sure `common.py` is updated with all relevant parameters
+
+2. Once you have updated the configuration, you can run the script with the following command:
+
+```bash
+python sync_cluster_policies.py
+```
+
+This syncs cluster policy definitions. Policies are created with identical JSON in the target.
+
+### Syncing Instance Pools
+
+1. Make sure `common.py` is updated with all relevant parameters
+
+2. Once you have updated the configuration, you can run the script with the following command:
+
+```bash
+python sync_instance_pools.py
+```
+
+For AWS cross-region deployments, instance types can be automatically remapped between regions.
+
+### Syncing Instance Profiles (AWS)
+
+1. Make sure `common.py` is updated with all relevant parameters
+
+2. Once you have updated the configuration, you can run the script with the following command:
+
+```bash
+python sync_instance_profiles.py
+```
+
+This registers AWS IAM instance profiles in the target workspace. The IAM roles must already exist in the target AWS account.
+
+### Syncing Secret Scopes
+
+1. Make sure `common.py` is updated with all relevant parameters
+
+2. Once you have updated the configuration, you can run the script with the following command:
+
+```bash
+python sync_secret_scopes.py
+```
+
+This syncs secret scope metadata and ACLs. Note: Secret values are NOT synced. For Databricks-backed scopes, recreate secrets manually. For AWS Secrets Manager-backed scopes, ensure the AWS secret exists in the target account.
+
+### Syncing Notebooks
+
+1. Make sure `common.py` is updated with all relevant parameters
+
+2. Once you have updated the configuration, you can run the script with the following command:
+
+```bash
+python sync_notebooks.py
+```
+
+This exports notebooks from the source workspace and imports them to the target workspace, preserving folder structure. Supports SOURCE, JUPYTER, and DBC formats.
+
+## Installation
+
+### From Source
+
+```bash
+git clone https://github.com/gregwood-db/databricks-dr-examples.git
+cd databricks-dr-examples
+pip install -e .
+```
+
+This installs the `dr-sync` CLI command.
+
+### Development Installation
+
+```bash
+pip install -e ".[dev]"
+pre-commit install
+```
+
+## Development
+
+### Running Tests
+
+```bash
+pytest
+```
+
+### Linting
+
+```bash
+make lint  # black, ruff, mypy
+make format  # black, ruff --fix
+```
+
+### Code Formatting
+
+This project uses:
+- **black** for code formatting (line length: 100)
+- **ruff** for linting with Databricks notebook builtins (`spark`, `sql`, `display`)
+- **mypy** for type checking (dr_sync/ package only)
+
+## See Also
+
+- [Azure Usage Guide](docs/azure_usage_guide.md) - Azure-specific setup instructions
+- [AWS Usage Guide](docs/aws_usage_guide.md) - AWS-specific setup instructions
+- [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) - Detailed implementation roadmap
