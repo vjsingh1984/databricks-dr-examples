@@ -17,6 +17,7 @@
 #   -catalogs_to_copy: a list of the catalogs to be replicated between workspaces.
 #   -num_exec: the number of threads to spawn in the ThreadPoolExecutor.
 
+import argparse
 import logging
 import os
 from itertools import repeat
@@ -90,6 +91,9 @@ def sync_grants(w_src, w_tgt, obj_name, obj_type):
 
     # if any grants changed, update the object in target
     if change_list:
+        if config.dry_run:
+            logger.info("[DRY RUN] Would update grants for %s (%s)", obj_name, obj_type)
+            return {"name": obj_name, "status": "DRY_RUN"}
         w_tgt.grants.update(full_name=obj_name,
                             securable_type=obj_type,
                             changes=change_list)
@@ -183,3 +187,12 @@ for cat in catalogs_to_copy:
                 logger.error("Volume %s does not exist in target workspace. Sync volumes and re-run.", name)
             else:
                 logger.info("No changes to sync for volume %s.", name)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Sync permissions (grants) between workspaces")
+    parser.add_argument("--dry-run", action="store_true", help="Show planned operations without executing")
+    parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                        help="Set logging level")
+    args = parser.parse_args()
+    config.dry_run = args.dry_run
+    logger = setup_logging(level=args.log_level)

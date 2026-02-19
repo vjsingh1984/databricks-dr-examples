@@ -15,6 +15,7 @@
 # Currently, we use PAT-based auth for the WorkspaceClient objects, so you must provide the host and token manually for
 # each workspace. You can update this to use other auth methods if desired.
 
+import argparse
 import logging
 import os
 from databricks.sdk import WorkspaceClient
@@ -76,6 +77,10 @@ for catalog in catalogs_to_create:
         continue
 
     # create catalog in target metastore
+    if config.dry_run:
+        logger.info("[DRY RUN] Would create catalog %s", catalog_name)
+        continue
+
     if storage_root:
         w_target.catalogs.create(name=catalog_name,
                                  comment=catalog_comment,
@@ -116,6 +121,10 @@ for catalog in source_catalogs:
 
         storage_root = filtered['target_storage_root'].iloc[0]
 
+        if config.dry_run:
+            logger.info("[DRY RUN] Would create schema %s.%s", catalog.name, schema_name)
+            continue
+
         if storage_root:
             w_target.schemas.create(name=schema_name,
                                     comment=schema_comment,
@@ -129,3 +138,12 @@ for catalog in source_catalogs:
                                     catalog_name=catalog.name)
 
         logger.info("Created schema %s.%s.", catalog.name, schema_name)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Sync catalogs and schemas between workspaces")
+    parser.add_argument("--dry-run", action="store_true", help="Show planned operations without executing")
+    parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                        help="Set logging level")
+    args = parser.parse_args()
+    config.dry_run = args.dry_run
+    logger = setup_logging(level=args.log_level)

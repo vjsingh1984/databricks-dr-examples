@@ -23,6 +23,7 @@
 # cloud object information in the provided CSVs, especially for Azure; this could be done by directly interfacing with
 # the cloud provider CLI/APIs within this script (or as part of an external workflow).
 
+import argparse
 import logging
 import os
 from databricks.sdk import WorkspaceClient
@@ -78,6 +79,9 @@ for cred in creds_to_create:
 
         # create storage credential in target WS
         cred_iam_role = catalog.AwsIamRole(role_arn=iam_role_arn)
+        if config.dry_run:
+            logger.info("[DRY RUN] Would create credential %s", cred_name)
+            continue
         w_target.storage_credentials.create(name=cred_name,
                                             read_only=cred_read_only,
                                             comment=cred_comment,
@@ -95,6 +99,9 @@ for cred in creds_to_create:
             continue
 
         # create storage credential in target WS
+        if config.dry_run:
+            logger.info("[DRY RUN] Would create credential %s", cred_name)
+            continue
         if managed_id_connector:
             cred_mgd_id = catalog.AzureManagedIdentityRequest(access_connector_id=managed_id_connector)
             w_target.storage_credentials.create(name=cred_name,
@@ -158,6 +165,10 @@ for loc in locs_to_create:
             logger.error("Could not create location %s. Please check mapping file.", loc_name)
             continue
 
+        if config.dry_run:
+            logger.info("[DRY RUN] Would create external location %s", loc_name)
+            continue
+
         if access_pt:
             w_target.external_locations.create(name=loc_name,
                                                credential_name=loc_cred_name,
@@ -180,6 +191,10 @@ for loc in locs_to_create:
             logger.error("Could not create location %s. Please check mapping file.", loc_name)
             continue
 
+        if config.dry_run:
+            logger.info("[DRY RUN] Would create external location %s", loc_name)
+            continue
+
         w_target.external_locations.create(name=loc_name,
                                            credential_name=loc_cred_name,
                                            comment=loc_comment,
@@ -194,3 +209,12 @@ for loc in locs_to_create:
         continue
 
     logger.info("External location %s created.", loc_name)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Sync storage credentials and external locations between workspaces")
+    parser.add_argument("--dry-run", action="store_true", help="Show planned operations without executing")
+    parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                        help="Set logging level")
+    args = parser.parse_args()
+    config.dry_run = args.dry_run
+    logger = setup_logging(level=args.log_level)

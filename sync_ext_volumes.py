@@ -16,6 +16,7 @@
 #   -num_exec: the number of threads to spawn in the ThreadPoolExecutor.
 
 
+import argparse
 import logging
 import os
 from itertools import repeat
@@ -39,6 +40,11 @@ num_exec = config.num_exec
 # helper function to create volumes and set appropriate owner
 def create_volume(w, catalog_name, schema_name, volume_name, location, owner):
     logger.info("Creating volume %s in %s.%s...", volume_name, catalog_name, schema_name)
+
+    # dry-run guard: log what would be created without executing
+    if config.dry_run:
+        logger.info("[DRY RUN] Would create volume %s in %s.%s", volume_name, catalog_name, schema_name)
+        return {"volume": f"{catalog_name}.{schema_name}.{volume_name}", "status": "dry_run"}
 
     # try creating new volume
     try:
@@ -100,3 +106,12 @@ for cat in catalogs_to_copy:
                 logger.warning("Skipped volume %s because it already exists.", thread["volume"])
             else:
                 logger.error("Could not create volume %s; error: %s", thread["volume"], thread["status"])
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Sync external volumes between workspaces")
+    parser.add_argument("--dry-run", action="store_true", help="Show planned operations without executing")
+    parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                        help="Set logging level")
+    args = parser.parse_args()
+    config.dry_run = args.dry_run
+    logger = setup_logging(level=args.log_level)

@@ -23,6 +23,7 @@
 # warehouse. All table load statuses will be written to the delta table at {target_bucket}/sync_status_{time.time_ns()}.
 
 
+import argparse
 import logging
 import os
 import time
@@ -92,65 +93,90 @@ w_target = WorkspaceClient(host=target_host, token=target_pat)
 
 system_info = spark.sql("SELECT * FROM system.information_schema.tables")
 
-# create warehouse to run table creation statements, guaranteed cleanup
-with managed_warehouse(w_target, size=warehouse_size) as wh_id:
-    # loop through all catalogs to copy, then copy all tables excluding system tables.
-    # we also skip views; these need to be created separately since they cannot be cloned.
+if config.dry_run:
+    # In dry-run mode, log what would happen without creating warehouses or executing SQL
     for cat in catalogs_to_copy:
         filtered_tables = system_info.filter(
             (system_info.table_catalog == cat) &
             (system_info.table_schema != "information_schema") &
             (system_info.table_type == "EXTERNAL")).collect()
 
-        # get schemas, tables and types in list form
         schemas = [row['table_schema'] for row in filtered_tables]
         table_names = [row['table_name'] for row in filtered_tables]
         table_locs = [row['storage_path'] for row in filtered_tables]
 
-        with ThreadPoolExecutor(max_workers=num_exec) as executor:
-            threads = executor.map(drop_table_if_exists,
-                                   repeat(w_target),
-                                   repeat(wh_id),
-                                   repeat(cat),
-                                   schemas,
-                                   table_names)
+        logger.info("[DRY RUN] Would process %d external tables in catalog %s", len(table_names), cat)
+        for schema, table_name, location in zip(schemas, table_names, table_locs):
+            logger.info("[DRY RUN] Would drop and recreate external table %s.%s.%s at %s", cat, schema, table_name, location)
+else:
+    # create warehouse to run table creation statements, guaranteed cleanup
+    with managed_warehouse(w_target, size=warehouse_size) as wh_id:
+        # loop through all catalogs to copy, then copy all tables excluding system tables.
+        # we also skip views; these need to be created separately since they cannot be cloned.
+        for cat in catalogs_to_copy:
+            filtered_tables = system_info.filter(
+                (system_info.table_catalog == cat) &
+                (system_info.table_schema != "information_schema") &
+                (system_info.table_type == "EXTERNAL")).collect()
 
-            for thread in threads:
-                if thread["status"]:
-                    logger.info("Dropped table %s.%s.%s.", thread["catalog"], thread["schema"], thread["table_name"])
-                else:
-                    logger.error("Error dropping table %s.%s.%s.", thread["catalog"], thread["schema"], thread["table_name"])
+            # get schemas, tables and types in list form
+            schemas = [row['table_schema'] for row in filtered_tables]
+            table_names = [row['table_name'] for row in filtered_tables]
+            table_locs = [row['storage_path'] for row in filtered_tables]
 
-        # use ThreadPool to copy tables in parallel
-        with ThreadPoolExecutor(max_workers=num_exec) as executor:
-            threads = executor.map(load_table,
-                                   repeat(w_target),
-                                   repeat(cat),
-                                   schemas,
-                                   table_names,
-                                   table_locs,
-                                   repeat(wh_id))
+            with ThreadPoolExecutor(max_workers=num_exec) as executor:
+                threads = executor.map(drop_table_if_exists,
+                                       repeat(w_target),
+                                       repeat(wh_id),
+                                       repeat(cat),
+                                       schemas,
+                                       table_names)
 
-            # wait for threads to execute and build lists for status table
-            for thread in threads:
-                loaded_table_names.append(thread["table_name"])
-                loaded_table_schemas.append(thread["schema"])
-                loaded_table_catalogs.append(thread["catalog"])
-                loaded_table_locations.append(thread["location"])
-                loaded_table_status.append(thread["status"])
-                loaded_table_times.append(thread["creation_time"])
-                logger.info("Loaded table %s.%s.%s.", thread["catalog"], thread["schema"], thread["table_name"])
+                for thread in threads:
+                    if thread["status"]:
+                        logger.info("Dropped table %s.%s.%s.", thread["catalog"], thread["schema"], thread["table_name"])
+                    else:
+                        logger.error("Error dropping table %s.%s.%s.", thread["catalog"], thread["schema"], thread["table_name"])
 
-    # create the table statuses as a df and write to a table in dr target
-    status_df = pd.DataFrame({"catalog": loaded_table_catalogs,
-                              "schema": loaded_table_schemas,
-                              "table": loaded_table_names,
-                              "location": loaded_table_locations,
-                              "status": loaded_table_status,
-                              "create_time": loaded_table_times})
+            # use ThreadPool to copy tables in parallel
+            with ThreadPoolExecutor(max_workers=num_exec) as executor:
+                threads = executor.map(load_table,
+                                       repeat(w_target),
+                                       repeat(cat),
+                                       schemas,
+                                       table_names,
+                                       table_locs,
+                                       repeat(wh_id))
 
-    # table will get a specific timestamp-based location per run
-    (spark.createDataFrame(status_df)
-     .write.mode("overwrite")
-     .format("delta")
-     .save(f"{landing_zone_url}/sync_status_{time.time_ns()}"))
+                # wait for threads to execute and build lists for status table
+                for thread in threads:
+                    loaded_table_names.append(thread["table_name"])
+                    loaded_table_schemas.append(thread["schema"])
+                    loaded_table_catalogs.append(thread["catalog"])
+                    loaded_table_locations.append(thread["location"])
+                    loaded_table_status.append(thread["status"])
+                    loaded_table_times.append(thread["creation_time"])
+                    logger.info("Loaded table %s.%s.%s.", thread["catalog"], thread["schema"], thread["table_name"])
+
+        # create the table statuses as a df and write to a table in dr target
+        status_df = pd.DataFrame({"catalog": loaded_table_catalogs,
+                                  "schema": loaded_table_schemas,
+                                  "table": loaded_table_names,
+                                  "location": loaded_table_locations,
+                                  "status": loaded_table_status,
+                                  "create_time": loaded_table_times})
+
+        # table will get a specific timestamp-based location per run
+        (spark.createDataFrame(status_df)
+         .write.mode("overwrite")
+         .format("delta")
+         .save(f"{landing_zone_url}/sync_status_{time.time_ns()}"))
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Sync GRS-replicated external tables to secondary Databricks workspace")
+    parser.add_argument("--dry-run", action="store_true", help="Show planned operations without executing")
+    parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                        help="Set logging level")
+    args = parser.parse_args()
+    config.dry_run = args.dry_run
+    logger = setup_logging(level=args.log_level)

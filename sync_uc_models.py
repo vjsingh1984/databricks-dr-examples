@@ -1,3 +1,4 @@
+import argparse
 import logging
 import os
 from itertools import repeat
@@ -20,6 +21,11 @@ num_exec = config.num_exec
 # helper function to create models and set appropriate owner
 def create_model(w, catalog_name, schema_name, model_name, location, owner, comment):
     logger.info("Creating model %s in %s.%s...", model_name, catalog_name, schema_name)
+
+    # dry-run guard: log what would be created without executing
+    if config.dry_run:
+        logger.info("[DRY RUN] Would create model %s in %s.%s", model_name, catalog_name, schema_name)
+        return {"model": f"{catalog_name}.{schema_name}.{model_name}", "status": "dry_run"}
 
     # try creating new model
     try:
@@ -86,3 +92,12 @@ for cat in catalogs_to_copy:
                 logger.warning("Skipped model %s because it already exists.", thread["model"])
             else:
                 logger.error("Could not create model %s; error: %s", thread["model"], thread["status"])
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Sync Unity Catalog registered models between workspaces")
+    parser.add_argument("--dry-run", action="store_true", help="Show planned operations without executing")
+    parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                        help="Set logging level")
+    args = parser.parse_args()
+    config.dry_run = args.dry_run
+    logger = setup_logging(level=args.log_level)
