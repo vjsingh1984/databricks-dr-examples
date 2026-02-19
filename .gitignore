@@ -54,6 +54,9 @@ Thumbs.db
 .pre-commit-config.yaml
 scripts/
 
+# DR Sync state
+.dr_sync_state/
+
 # Logs and reports
 *.log
 *.out

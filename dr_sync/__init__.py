@@ -18,6 +18,10 @@ from dr_sync.csv_mapping import load_mapping, lookup_value
 from dr_sync.thread_utils import parallel_map, ProgressCounter
 from dr_sync.config import DRSyncConfig
 from dr_sync.log import setup_logging
+from dr_sync.retry import retry_with_backoff
+from dr_sync.checkpoint import CheckpointManager, SyncCheckpoint
+from dr_sync.filter import ResourceFilter, parse_filter_args
+from dr_sync.registry import register_sync, get_registry, SyncRegistry, SyncModule
 
 __all__ = [
     "DRSyncError",
@@ -36,4 +40,13 @@ __all__ = [
     "ProgressCounter",
     "DRSyncConfig",
     "setup_logging",
+    "retry_with_backoff",
+    "CheckpointManager",
+    "SyncCheckpoint",
+    "ResourceFilter",
+    "parse_filter_args",
+    "register_sync",
+    "get_registry",
+    "SyncRegistry",
+    "SyncModule",
 ]

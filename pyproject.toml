@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "databricks-dr-sync"
+version = "0.2.0"
+description = "Databricks Disaster Recovery sync tools for Unity Catalog resources"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "BSD-3-Clause"}
+authors = [
+    {name = "Databricks Community"}
+]
+keywords = ["databricks", "dr", "disaster-recovery", "unity-catalog", "sync"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "databricks-sdk>=0.20.0",
+    "pandas>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.11.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.5.0",
+    "pandas-stubs>=2.0.0",
+    "types-requests>=2.31.0",
+]
+
+[project.scripts]
+dr-sync = "dr_sync.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/gregwood-db/databricks-dr-examples"
+Repository = "https://github.com/gregwood-db/databricks-dr-examples"
+Issues = "https://github.com/gregwood-db/databricks-dr-examples/issues"
+
+[tool.setuptools.packages.find]
+include = ["dr_sync*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py39", "py310", "py311", "py312"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+builtins = ["spark", "sql", "display"]
+
+[tool.mypy]
+python_version = "3.9"
+ignore_missing_imports = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --cov=dr_sync --cov-report=term-missing --cov-report=html"
+markers = [
+    "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
+    "unit: marks tests as unit tests",
+]
