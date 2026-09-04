@@ -1,18 +1,19 @@
-import argparse
-import os
-from itertools import repeat
-from databricks.sdk import WorkspaceClient
 from concurrent.futures import ThreadPoolExecutor
+from itertools import repeat
+
 from databricks.sdk.errors.platform import ResourceAlreadyExists
+
+from dr_sync.cli import configure_runtime
 from dr_sync.config import DRSyncConfig
 from dr_sync.log import setup_logging
+from dr_sync.workspace import create_client
 
-config = (
-    DRSyncConfig.from_env()
-    if os.environ.get("DR_SYNC_SOURCE_HOST")
-    else DRSyncConfig.from_common_module()
+config = DRSyncConfig.load()
+logger = (
+    configure_runtime(config, "Sync Unity Catalog registered models between workspaces")
+    if __name__ == "__main__"
+    else setup_logging()
 )
-logger = setup_logging()
 target_host = config.target_host
 target_pat = config.target_token
 source_host = config.source_host
@@ -48,9 +49,7 @@ def create_model(w, catalog_name, schema_name, model_name, location, owner, comm
             storage_location=location,
         )
 
-        _ = w.registered_models.update(
-            full_name=model.full_name, comment=comment, owner=owner
-        )
+        _ = w.registered_models.update(full_name=model.full_name, comment=comment, owner=owner)
         return {"model": model.full_name, "status": "success"}
 
     # if model already exists, just update the owner (in case it has changed)
@@ -72,10 +71,10 @@ def create_model(w, catalog_name, schema_name, model_name, location, owner, comm
 
 
 # create the WorkspaceClient pointed at the target WS
-w_source = WorkspaceClient(host=source_host, token=source_pat)
+w_source = create_client(host=source_host, token=source_pat, profile=config.source_profile)
 
 # create the WorkspaceClient pointed at the target WS
-w_target = WorkspaceClient(host=target_host, token=target_pat)
+w_target = create_client(host=target_host, token=target_pat, profile=config.target_profile)
 
 # pull registered models from list
 registered_models = w_source.registered_models.list()
@@ -115,31 +114,10 @@ for cat in catalogs_to_copy:
             if thread["status"] == "success":
                 logger.info("Created model %s.", thread["model"])
             elif thread["status"] == "already_exists":
-                logger.warning(
-                    "Skipped model %s because it already exists.", thread["model"]
-                )
+                logger.warning("Skipped model %s because it already exists.", thread["model"])
             else:
                 logger.error(
                     "Could not create model %s; error: %s",
                     thread["model"],
                     thread["status"],
                 )
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Sync Unity Catalog registered models between workspaces"
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show planned operations without executing",
-    )
-    parser.add_argument(
-        "--log-level",
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Set logging level",
-    )
-    args = parser.parse_args()
-    config.dry_run = args.dry_run
-    logger = setup_logging(level=args.log_level)

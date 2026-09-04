@@ -1,32 +1,48 @@
-"""WorkspaceClient factory with flexible authentication."""
+"""WorkspaceClient factory using Databricks unified authentication."""
 
-import os
+from urllib.parse import urlsplit
 
 from databricks.sdk import WorkspaceClient
 
+from dr_sync.exceptions import ConfigurationError
+
+
+def _validate_host(host):
+    if host is None:
+        return None
+    parsed = urlsplit(host)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ConfigurationError(
+            "workspace host must be an HTTPS origin without credentials or a path"
+        )
+    return host.rstrip("/")
+
 
 def create_client(host=None, token=None, profile=None):
-    """Create a WorkspaceClient with auth resolution.
+    """Create a client through the SDK's unified authentication chain.
 
-    Resolution order: explicit args -> environment variables -> SDK default chain.
-
-    Args:
-        host: Workspace URL (e.g. https://adb-xxx.azuredatabricks.net).
-        token: Personal access token.
-        profile: Databricks CLI profile name.
-
-    Returns:
-        Configured WorkspaceClient instance.
+    Prefer a named CLI profile for interactive use and workload identity
+    federation/OAuth for automation. ``token`` exists only for legacy PAT
+    migration and must not be combined with ``profile``.
     """
-    resolved_host = host or os.environ.get("DATABRICKS_HOST")
-    resolved_token = token or os.environ.get("DATABRICKS_TOKEN")
+    if token and profile:
+        raise ConfigurationError("token and profile are mutually exclusive")
 
     kwargs = {}
-    if resolved_host:
-        kwargs["host"] = resolved_host
-    if resolved_token:
-        kwargs["token"] = resolved_token
+    validated_host = _validate_host(host)
+    if validated_host:
+        kwargs["host"] = validated_host
     if profile:
         kwargs["profile"] = profile
+    elif token:
+        kwargs["token"] = token
 
     return WorkspaceClient(**kwargs)

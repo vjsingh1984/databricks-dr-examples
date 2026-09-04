@@ -24,23 +24,24 @@
 # warehouse. Table load statuses will be written to the delta table at {landing_zone_url}/sync_status_{time.time_ns()}.
 
 
-import argparse
-import os
 import time
-import pandas as pd
-from itertools import repeat
-from databricks.sdk import WorkspaceClient
 from concurrent.futures import ThreadPoolExecutor
-from dr_sync.sql_utils import execute_statement_sync, managed_warehouse
-from dr_sync.exceptions import StatementError
-from dr_sync.config import DRSyncConfig
-from dr_sync.log import setup_logging
+from itertools import repeat
 
-logger = setup_logging()
-config = (
-    DRSyncConfig.from_env()
-    if os.environ.get("DR_SYNC_SOURCE_HOST")
-    else DRSyncConfig.from_common_module()
+import pandas as pd
+
+from dr_sync.cli import configure_runtime
+from dr_sync.config import DRSyncConfig
+from dr_sync.exceptions import StatementError
+from dr_sync.log import setup_logging
+from dr_sync.sql_utils import execute_statement_sync, managed_warehouse, qualified_identifier
+from dr_sync.workspace import create_client
+
+config = DRSyncConfig.load()
+logger = (
+    configure_runtime(config, "Sync views between primary and secondary Databricks workspaces")
+    if __name__ == "__main__"
+    else setup_logging()
 )
 target_host = config.target_host
 target_pat = config.target_token
@@ -56,7 +57,7 @@ def create_view(w, catalog, schema, view_name, warehouse):
 
     try:
         view_stmt = spark.sql(
-            f"show create table {catalog}.{schema}.{view_name}"
+            f"SHOW CREATE TABLE {qualified_identifier(catalog, schema, view_name)}"
         ).collect()[0]["createtab_stmt"]
 
         execute_statement_sync(w, warehouse, view_stmt, backoff=response_backoff)
@@ -92,7 +93,7 @@ def create_view(w, catalog, schema, view_name, warehouse):
 all_views = spark.sql("SELECT * FROM system.information_schema.views")
 
 # create the WorkspaceClient pointed at the target WS
-w_target = WorkspaceClient(host=target_host, token=target_pat)
+w_target = create_client(host=target_host, token=target_pat, profile=config.target_profile)
 
 # initialize lists for status tracking
 loaded_view_names = []
@@ -105,17 +106,14 @@ if config.dry_run:
     # In dry-run mode, log what would happen without creating warehouses or executing SQL
     for cat in catalogs_to_copy:
         filtered_views = all_views.filter(
-            (all_views.table_catalog == cat)
-            & (all_views.table_schema != "information_schema")
+            (all_views.table_catalog == cat) & (all_views.table_schema != "information_schema")
         ).collect()
 
         schemas = [row["table_schema"] for row in filtered_views]
         view_names = [row["table_name"] for row in filtered_views]
 
-        logger.info(
-            "[DRY RUN] Would create %d views in catalog %s", len(view_names), cat
-        )
-        for schema, view_name in zip(schemas, view_names):
+        logger.info("[DRY RUN] Would create %d views in catalog %s", len(view_names), cat)
+        for schema, view_name in zip(schemas, view_names, strict=False):
             logger.info("[DRY RUN] Would create view %s.%s.%s", cat, schema, view_name)
 else:
     # create warehouse to run view creation statements, guaranteed cleanup
@@ -124,8 +122,7 @@ else:
         # load all views per catalog
         for cat in catalogs_to_copy:
             filtered_views = all_views.filter(
-                (all_views.table_catalog == cat)
-                & (all_views.table_schema != "information_schema")
+                (all_views.table_catalog == cat) & (all_views.table_schema != "information_schema")
             ).collect()
 
             # get schemas and view names
@@ -174,22 +171,3 @@ else:
             .format("delta")
             .save(f"{landing_zone_url}/view_sync_status_{ts}")
         )
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Sync views between primary and secondary Databricks workspaces"
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show planned operations without executing",
-    )
-    parser.add_argument(
-        "--log-level",
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Set logging level",
-    )
-    args = parser.parse_args()
-    config.dry_run = args.dry_run
-    logger = setup_logging(level=args.log_level)

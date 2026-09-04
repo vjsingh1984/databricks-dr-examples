@@ -1,39 +1,47 @@
 """DR Sync — shared utilities for Databricks Disaster Recovery scripts."""
 
+from dr_sync.cli import configure_runtime
+from dr_sync.config import DRSyncConfig
+from dr_sync.csv_mapping import load_mapping, lookup_value
 from dr_sync.exceptions import (
-    DRSyncError,
     ConfigurationError,
+    DRSyncError,
     MappingError,
     StatementError,
-    WarehouseError,
     SyncError,
+    WarehouseError,
 )
+from dr_sync.log import setup_logging
 from dr_sync.sql_utils import (
+    drop_table_if_exists,
     execute_statement_sync,
     managed_warehouse,
-    drop_table_if_exists,
+    qualified_identifier,
+    quote_identifier,
+    quote_string_literal,
 )
+from dr_sync.thread_utils import ProgressCounter, parallel_map
 from dr_sync.workspace import create_client
-from dr_sync.csv_mapping import load_mapping, lookup_value
-from dr_sync.thread_utils import parallel_map, ProgressCounter
-from dr_sync.config import DRSyncConfig
-from dr_sync.log import setup_logging
 
 __all__ = [
-    "DRSyncError",
     "ConfigurationError",
+    "DRSyncConfig",
+    "DRSyncError",
     "MappingError",
+    "ProgressCounter",
     "StatementError",
-    "WarehouseError",
     "SyncError",
-    "execute_statement_sync",
-    "managed_warehouse",
-    "drop_table_if_exists",
+    "WarehouseError",
+    "configure_runtime",
     "create_client",
+    "drop_table_if_exists",
+    "execute_statement_sync",
     "load_mapping",
     "lookup_value",
+    "managed_warehouse",
     "parallel_map",
-    "ProgressCounter",
-    "DRSyncConfig",
+    "qualified_identifier",
+    "quote_identifier",
+    "quote_string_literal",
     "setup_logging",
 ]

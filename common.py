@@ -7,14 +7,14 @@ cred_mapping_file = "data/azure_cred_mapping.csv"  # path to credential mapping 
 loc_mapping_file = "data/ext_location_mapping.csv"  # path to locations mapping file
 catalog_mapping_file = "data/catalog_mapping.csv"  # path to catalog mapping file
 schema_mapping_file = "data/schema_mapping.csv"  # path to schema mapping file
-source_host = "<primary-ws-hostname>"  # source hostname, including https://
-source_pat = "<primary-ws-pat>"  # source PAT
-target_host = "<secondary-ws-hostname>"  # target hostname, including https://
-target_pat = "<primary-ws-pat>"  # targe PAT
+source_host = ""  # optional when the SOURCE profile supplies the host
+source_profile = "SOURCE"  # Databricks CLI profile using unified authentication
+source_pat = ""  # legacy-only; prefer OAuth/WIF or a CLI profile
+target_host = ""  # optional when the TARGET profile supplies the host
+target_profile = "TARGET"  # Databricks CLI profile using unified authentication
+target_pat = ""  # legacy-only; prefer OAuth/WIF or a CLI profile
 catalogs_to_copy = ["my-catalog1", "my-catalog2"]  # list of catalogs to replicate
-landing_zone_url = (
-    "path/to/storage/"  # if using sync_tables, intermediate storage location
-)
+landing_zone_url = "path/to/storage/"  # if using sync_tables, intermediate storage location
 num_exec = 4  # number of parallel threads to execute
 warehouse_size = "Small"  # serverless warehouse size in target WS
 response_backoff = 0.5  # polling backoff for checking query status

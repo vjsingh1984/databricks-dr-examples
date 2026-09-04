@@ -17,22 +17,23 @@
 #   -catalogs_to_copy: a list of the catalogs to be replicated between workspaces.
 #   -num_exec: the number of threads to spawn in the ThreadPoolExecutor.
 
-import argparse
-import os
-from itertools import repeat
-from databricks.sdk.service import catalog
-from databricks.sdk import WorkspaceClient
 from concurrent.futures import ThreadPoolExecutor
+from itertools import repeat
+
 from databricks.sdk.errors.platform import NotFound
+from databricks.sdk.service import catalog
+
+from dr_sync.cli import configure_runtime
 from dr_sync.config import DRSyncConfig
 from dr_sync.log import setup_logging
+from dr_sync.workspace import create_client
 
-config = (
-    DRSyncConfig.from_env()
-    if os.environ.get("DR_SYNC_SOURCE_HOST")
-    else DRSyncConfig.from_common_module()
+config = DRSyncConfig.load()
+logger = (
+    configure_runtime(config, "Sync permissions (grants) between workspaces")
+    if __name__ == "__main__"
+    else setup_logging()
 )
-logger = setup_logging()
 target_host = config.target_host
 target_pat = config.target_token
 source_host = config.source_host
@@ -64,27 +65,23 @@ def sync_grants(w_src, w_tgt, obj_name, obj_type):
         try:
             source_privs = [
                 x.privilege
-                for x in [
-                    p.privileges
-                    for p in source_grants.privilege_assignments
-                    if p.principal == u
-                ][0]
+                for x in next(
+                    p.privileges for p in source_grants.privilege_assignments if p.principal == u
+                )
                 if x.privilege is not None
             ]
-        except IndexError:
+        except StopIteration:
             source_privs = []
 
         try:
             target_privs = [
                 x.privilege
-                for x in [
-                    p.privileges
-                    for p in target_grants.privilege_assignments
-                    if p.principal == u
-                ][0]
+                for x in next(
+                    p.privileges for p in target_grants.privilege_assignments if p.principal == u
+                )
                 if x.privilege is not None
             ]
-        except IndexError:
+        except StopIteration:
             target_privs = []
 
         add_perms = list(set(source_privs) - set(target_privs))
@@ -105,17 +102,15 @@ def sync_grants(w_src, w_tgt, obj_name, obj_type):
         if config.dry_run:
             logger.info("[DRY RUN] Would update grants for %s (%s)", obj_name, obj_type)
             return {"name": obj_name, "status": "DRY_RUN"}
-        w_tgt.grants.update(
-            full_name=obj_name, securable_type=obj_type, changes=change_list
-        )
+        w_tgt.grants.update(full_name=obj_name, securable_type=obj_type, changes=change_list)
         return {"name": obj_name, "status": "SUCCESS"}
     else:
         return {"name": obj_name, "status": None}
 
 
 # create the WorkspaceClients for source and target workspaces
-w_source = WorkspaceClient(host=source_host, token=source_pat)
-w_target = WorkspaceClient(host=target_host, token=target_pat)
+w_source = create_client(host=source_host, token=source_pat, profile=config.source_profile)
+w_target = create_client(host=target_host, token=target_pat, profile=config.target_profile)
 
 # get all tables in the source ws
 table_info = spark.sql("SELECT * FROM system.information_schema.tables")
@@ -124,8 +119,7 @@ volume_info = spark.sql("SELECT * FROM system.information_schema.volumes")
 # iterate through catalogs
 for cat in catalogs_to_copy:
     filtered_tables = table_info.filter(
-        (table_info.table_catalog == cat)
-        & (table_info.table_schema != "information_schema")
+        (table_info.table_catalog == cat) & (table_info.table_schema != "information_schema")
     ).collect()
 
     filtered_volumes = volume_info.filter(volume_info.volume_catalog == cat).collect()
@@ -144,14 +138,13 @@ for cat in catalogs_to_copy:
         logger.info("No changes to sync for catalog %s.", cat)
 
     # get list of fully qualified schemas and tables
-    schemas = {
-        f"{cat}.{schema}" for schema in [row["table_schema"] for row in filtered_tables]
-    }
+    schemas = {f"{cat}.{schema}" for schema in [row["table_schema"] for row in filtered_tables]}
     table_names = [
         f"{cat}.{schema}.{table}"
         for schema, table in zip(
             [row["table_schema"] for row in filtered_tables],
             [row["table_name"] for row in filtered_tables],
+            strict=False,
         )
     ]
     volume_names = [
@@ -159,6 +152,7 @@ for cat in catalogs_to_copy:
         for schema, table in zip(
             [row["volume_schema"] for row in filtered_volumes],
             [row["volume_name"] for row in filtered_volumes],
+            strict=False,
         )
     ]
 
@@ -227,22 +221,3 @@ for cat in catalogs_to_copy:
                 )
             else:
                 logger.info("No changes to sync for volume %s.", name)
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Sync permissions (grants) between workspaces"
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show planned operations without executing",
-    )
-    parser.add_argument(
-        "--log-level",
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Set logging level",
-    )
-    args = parser.parse_args()
-    config.dry_run = args.dry_run
-    logger = setup_logging(level=args.log_level)

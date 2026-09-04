@@ -27,27 +27,33 @@
 # warehouse. Table load statuses will be written to the delta table at {landing_zone_url}/sync_status_{time.time_ns()}.
 
 
-import argparse
-import os
 import time
-import pandas as pd
-from itertools import repeat
-from databricks.sdk import WorkspaceClient
 from concurrent.futures import ThreadPoolExecutor
+from itertools import repeat
+
+import pandas as pd
+
+from dr_sync.cli import configure_runtime
+from dr_sync.config import DRSyncConfig
+from dr_sync.exceptions import StatementError
+from dr_sync.log import setup_logging
 from dr_sync.sql_utils import (
+    drop_table_if_exists,
     execute_statement_sync,
     managed_warehouse,
-    drop_table_if_exists,
+    qualified_identifier,
+    quote_identifier,
+    quote_string_literal,
 )
-from dr_sync.exceptions import StatementError
-from dr_sync.config import DRSyncConfig
-from dr_sync.log import setup_logging
+from dr_sync.workspace import create_client
 
-logger = setup_logging()
-config = (
-    DRSyncConfig.from_env()
-    if os.environ.get("DR_SYNC_SOURCE_HOST")
-    else DRSyncConfig.from_common_module()
+config = DRSyncConfig.load()
+logger = (
+    configure_runtime(
+        config, "Sync tables from primary to secondary Databricks workspace via deep clone"
+    )
+    if __name__ == "__main__"
+    else setup_logging()
 )
 target_host = config.target_host
 target_pat = config.target_token
@@ -64,7 +70,9 @@ manifest_name = config.manifest_name
 # helper function to copy tables
 def copy_table(w, catalog, schema, table_name, table_type, bucket, warehouse):
     try:
-        sqlstring = f"CREATE OR REPLACE TABLE delta.`{bucket}/{catalog}_{schema}_{table_name}` DEEP CLONE {catalog}.{schema}.{table_name}"
+        destination = f"delta.{quote_identifier(f'{bucket}/{catalog}_{schema}_{table_name}')}"
+        source = qualified_identifier(catalog, schema, table_name)
+        sqlstring = f"CREATE OR REPLACE TABLE {destination} DEEP CLONE {source}"
         execute_statement_sync(w, warehouse, sqlstring, backoff=response_backoff)
 
         # return the table params in dict; used to build manifest
@@ -100,7 +108,9 @@ def load_table(w, catalog, schema, table_name, table_type, location, warehouse):
     if table_type == "MANAGED":
         logger.info("Creating MANAGED table %s.%s.%s...", catalog, schema, table_name)
         try:
-            sqlstring = f"CREATE OR REPLACE TABLE {catalog}.{schema}.{table_name} DEEP CLONE delta.`{location}`"
+            target = qualified_identifier(catalog, schema, table_name)
+            source = f"delta.{quote_identifier(location)}"
+            sqlstring = f"CREATE OR REPLACE TABLE {target} DEEP CLONE {source}"
             execute_statement_sync(w, warehouse, sqlstring, backoff=response_backoff)
 
             return {
@@ -129,7 +139,10 @@ def load_table(w, catalog, schema, table_name, table_type, location, warehouse):
 
         try:
             # must drop table if it exists; CREATE_OR_REPLACE does not work when specifying external location
-            sqlstring = f"CREATE TABLE {catalog}.{schema}.{table_name} USING delta LOCATION '{location}'"
+            target = qualified_identifier(catalog, schema, table_name)
+            sqlstring = (
+                f"CREATE TABLE {target} USING delta LOCATION {quote_string_literal(location)}"
+            )
             execute_statement_sync(w, warehouse, sqlstring, backoff=response_backoff)
 
             return {
@@ -179,19 +192,20 @@ copied_table_catalogs = []
 copied_table_locations = []
 
 # create the WorkspaceClient pointed at the source WS
-w_source = WorkspaceClient(host=source_host, token=source_pat)
+w_source = create_client(host=source_host, token=source_pat, profile=config.source_profile)
 
 if config.dry_run:
     # In dry-run mode, log what would happen without creating warehouses or executing SQL
     for cat in catalogs_to_copy:
         filtered_tables = spark.sql(
-            f"""
+            """
             SELECT table_schema, table_name, table_type
             FROM system.information_schema.tables
-            WHERE table_catalog = '{cat}'
+            WHERE table_catalog = :catalog
               AND table_schema != 'information_schema'
               AND table_type != 'VIEW'
-        """
+        """,
+            args={"catalog": cat},
         ).collect()
 
         schemas = [row["table_schema"] for row in filtered_tables]
@@ -204,7 +218,7 @@ if config.dry_run:
             cat,
             landing_zone_url,
         )
-        for schema, table_name, table_type in zip(schemas, table_names, table_types):
+        for schema, table_name, table_type in zip(schemas, table_names, table_types, strict=False):
             logger.info(
                 "[DRY RUN] Would deep clone %s table %s.%s.%s to %s/%s_%s_%s",
                 table_type,
@@ -222,20 +236,21 @@ if config.dry_run:
     )
     for cat in catalogs_to_copy:
         filtered_tables = spark.sql(
-            f"""
+            """
             SELECT table_schema, table_name, table_type
             FROM system.information_schema.tables
-            WHERE table_catalog = '{cat}'
+            WHERE table_catalog = :catalog
               AND table_schema != 'information_schema'
               AND table_type != 'VIEW'
-        """
+        """,
+            args={"catalog": cat},
         ).collect()
 
         schemas = [row["table_schema"] for row in filtered_tables]
         table_names = [row["table_name"] for row in filtered_tables]
         table_types = [row["table_type"] for row in filtered_tables]
 
-        for schema, table_name, table_type in zip(schemas, table_names, table_types):
+        for schema, table_name, table_type in zip(schemas, table_names, table_types, strict=False):
             if table_type == "EXTERNAL":
                 logger.info(
                     "[DRY RUN] Would drop and recreate external table %s.%s.%s",
@@ -259,13 +274,14 @@ else:
         # we also skip views; these need to be created separately since they cannot be cloned.
         for cat in catalogs_to_copy:
             filtered_tables = spark.sql(
-                f"""
+                """
                 SELECT table_schema, table_name, table_type
                 FROM system.information_schema.tables
-                WHERE table_catalog = '{cat}'
+                WHERE table_catalog = :catalog
                   AND table_schema != 'information_schema'
                   AND table_type != 'VIEW'
-            """
+            """,
+                args={"catalog": cat},
             ).collect()
 
             # get schemas, tables and types in list form
@@ -330,7 +346,7 @@ else:
 
     # Phase 2: load tables from landing zone to target
     # create the WorkspaceClient pointed at the target WS
-    w_target = WorkspaceClient(host=target_host, token=target_pat)
+    w_target = create_client(host=target_host, token=target_pat, profile=config.target_profile)
 
     # initialize lists for status tracking
     loaded_table_names = []
@@ -421,22 +437,3 @@ else:
             .format("delta")
             .save(f"{landing_zone_url}/sync_status_{ts2}")
         )
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Sync tables from primary to secondary Databricks workspace via deep clone"
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show planned operations without executing",
-    )
-    parser.add_argument(
-        "--log-level",
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Set logging level",
-    )
-    args = parser.parse_args()
-    config.dry_run = args.dry_run
-    logger = setup_logging(level=args.log_level)

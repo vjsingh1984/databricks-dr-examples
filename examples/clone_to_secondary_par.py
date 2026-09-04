@@ -9,9 +9,10 @@
 # We assume this script is run on a Databricks cluster; if it is run locally, you may need to add additional configuration
 # to set up a spark context and authenticate with your Databricks cluster.
 
-import pandas as pd
-from itertools import repeat
 from concurrent.futures import ThreadPoolExecutor
+from itertools import repeat
+
+import pandas as pd
 
 
 # helper function to copy tables

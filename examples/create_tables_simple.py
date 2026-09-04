@@ -25,9 +25,9 @@ for row in manifest_df.collect():
         sql(sqlstring)
     elif tbl_type == "EXTERNAL":
         print(f"Creating EXTERNAL table {catalog}.{schema}.{table_name}...")
-        sqlstring = f"CREATE TABLE {catalog}.{schema}.{table_name} USING delta LOCATION '{location}'"
+        sqlstring = (
+            f"CREATE TABLE {catalog}.{schema}.{table_name} USING delta LOCATION '{location}'"
+        )
         sql(sqlstring)
     else:
-        print(
-            f"Skipping table {catalog}.{schema}.{table_name}; please check manifest file."
-        )
+        print(f"Skipping table {catalog}.{schema}.{table_name}; please check manifest file.")

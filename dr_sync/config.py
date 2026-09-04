@@ -2,7 +2,6 @@
 
 import os
 from dataclasses import dataclass, field
-from typing import List
 
 from dr_sync.exceptions import ConfigurationError
 
@@ -17,12 +16,14 @@ class DRSyncConfig:
     # Cloud and workspace settings
     cloud_type: str = "azure"
     source_host: str = ""
-    source_token: str = ""
+    source_token: str = field(default="", repr=False)
+    source_profile: str = ""
     target_host: str = ""
-    target_token: str = ""
+    target_token: str = field(default="", repr=False)
+    target_profile: str = ""
 
     # Catalogs
-    catalogs_to_copy: List[str] = field(default_factory=list)
+    catalogs_to_copy: list[str] = field(default_factory=list)
 
     # Mapping file paths
     cred_mapping_file: str = "data/azure_cred_mapping.csv"
@@ -46,18 +47,18 @@ class DRSyncConfig:
         """Create config by importing from common.py (backward compatible)."""
         try:
             import common
-        except ImportError:
+        except ImportError as exc:
             raise ConfigurationError(
                 "common.py not found. Please create it or use environment variables."
-            )
+            ) from exc
 
         kwargs = {}
         field_map = {
             "cloud_type": "cloud_type",
             "source_host": "source_host",
-            "source_token": "source_pat",
+            "source_profile": "source_profile",
             "target_host": "target_host",
-            "target_token": "target_pat",
+            "target_profile": "target_profile",
             "catalogs_to_copy": "catalogs_to_copy",
             "cred_mapping_file": "cred_mapping_file",
             "loc_mapping_file": "loc_mapping_file",
@@ -75,6 +76,13 @@ class DRSyncConfig:
             if hasattr(common, common_key):
                 kwargs[config_key] = getattr(common, common_key)
 
+        # Keep legacy PAT compatibility without placing token-like literals in
+        # assignment values; these are attribute names, never credential data.
+        if hasattr(common, "source_pat"):
+            kwargs["source_token"] = common.source_pat
+        if hasattr(common, "target_pat"):
+            kwargs["target_token"] = common.target_pat
+
         return cls(**kwargs)
 
     @classmethod
@@ -85,22 +93,20 @@ class DRSyncConfig:
             return os.environ.get(f"DR_SYNC_{name}", default)
 
         catalogs = get("CATALOGS_TO_COPY", "")
-        catalog_list = (
-            [c.strip() for c in catalogs.split(",") if c.strip()] if catalogs else []
-        )
+        catalog_list = [c.strip() for c in catalogs.split(",") if c.strip()] if catalogs else []
 
         return cls(
             cloud_type=get("CLOUD_TYPE", "azure"),
             source_host=get("SOURCE_HOST"),
             source_token=get("SOURCE_TOKEN"),
+            source_profile=get("SOURCE_PROFILE"),
             target_host=get("TARGET_HOST"),
             target_token=get("TARGET_TOKEN"),
+            target_profile=get("TARGET_PROFILE"),
             catalogs_to_copy=catalog_list,
             cred_mapping_file=get("CRED_MAPPING_FILE", "data/azure_cred_mapping.csv"),
             loc_mapping_file=get("LOC_MAPPING_FILE", "data/ext_location_mapping.csv"),
-            catalog_mapping_file=get(
-                "CATALOG_MAPPING_FILE", "data/catalog_mapping.csv"
-            ),
+            catalog_mapping_file=get("CATALOG_MAPPING_FILE", "data/catalog_mapping.csv"),
             schema_mapping_file=get("SCHEMA_MAPPING_FILE", "data/schema_mapping.csv"),
             landing_zone_url=get("LANDING_ZONE_URL"),
             num_exec=int(get("NUM_EXEC", "4")),
@@ -111,20 +117,41 @@ class DRSyncConfig:
             dry_run=get("DRY_RUN", "false").lower() in ("true", "1", "yes"),
         )
 
-    def validate(self) -> List[str]:
+    @classmethod
+    def load(cls):
+        """Load environment configuration when present, else legacy ``common.py``.
+
+        Looking for any DR_SYNC variable makes profile-only and workload-identity
+        configurations work; the previous source-host sentinel silently ignored them.
+        """
+        config = (
+            cls.from_env()
+            if any(name.startswith("DR_SYNC_") for name in os.environ)
+            else cls.from_common_module()
+        )
+        errors = config.validate()
+        if errors:
+            raise ConfigurationError("; ".join(errors))
+        return config
+
+    def validate(self) -> list[str]:
         """Validate configuration and return list of errors (empty = valid)."""
         errors = []
 
-        if not self.target_host:
-            errors.append("target_host is required")
-        if not self.target_token:
-            errors.append("target_token is required")
+        if not self.target_host and not self.target_profile:
+            errors.append("target_host or target_profile is required")
+        if self.source_token and self.source_profile:
+            errors.append("source_token and source_profile are mutually exclusive")
+        if self.target_token and self.target_profile:
+            errors.append("target_token and target_profile are mutually exclusive")
+        if self.source_token and not self.source_host:
+            errors.append("source_host is required when source_token is used")
+        if self.target_token and not self.target_host:
+            errors.append("target_host is required when target_token is used")
         if not self.catalogs_to_copy:
             errors.append("catalogs_to_copy must not be empty")
         if self.cloud_type not in ("aws", "azure", "gcp"):
-            errors.append(
-                f"cloud_type must be one of aws, azure, gcp (got {self.cloud_type!r})"
-            )
+            errors.append(f"cloud_type must be one of aws, azure, gcp (got {self.cloud_type!r})")
         if self.num_exec < 1:
             errors.append(f"num_exec must be >= 1 (got {self.num_exec})")
 

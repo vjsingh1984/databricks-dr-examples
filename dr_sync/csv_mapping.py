@@ -63,9 +63,7 @@ def validate_catalog_mapping(filepath):
         List of error strings (empty = valid).
     """
     errors = []
-    df = load_mapping(
-        filepath, required_columns=["source_catalog", "target_storage_root"]
-    )
+    df = load_mapping(filepath, required_columns=["source_catalog", "target_storage_root"])
     dupes = df[df.duplicated(subset=["source_catalog"], keep=False)]
     if not dupes.empty:
         dupe_names = dupes["source_catalog"].unique().tolist()
@@ -81,15 +79,48 @@ def validate_cred_mapping(filepath, cloud_type):
     """
     errors = []
     if cloud_type == "aws":
-        df = load_mapping(
-            filepath, required_columns=["source_cred_name", "target_iam_role"]
-        )
+        df = load_mapping(filepath, required_columns=["source_cred_name", "target_iam_role"])
         empty_roles = df[df["target_iam_role"] == ""]
         if not empty_roles.empty:
             names = empty_roles["source_cred_name"].tolist()
             errors.append(f"Empty target_iam_role for credentials: {names}")
     elif cloud_type == "azure":
         df = load_mapping(filepath, required_columns=["source_cred_name"])
+        auth_columns = {
+            "target_mgd_id_connector",
+            "target_mgd_id_identity",
+            "target_sp_directory",
+            "target_sp_appid",
+            "target_sp_secret_env",
+        }
+        if not auth_columns.issubset(df.columns):
+            errors.append(
+                "Azure mappings must use the managed-identity or secret-environment columns"
+            )
+        else:
+            for row in df.to_dict(orient="records"):
+                connector = row["target_mgd_id_connector"]
+                identity = row["target_mgd_id_identity"]
+                sp_values = [
+                    row["target_sp_directory"],
+                    row["target_sp_appid"],
+                    row["target_sp_secret_env"],
+                ]
+                uses_managed_identity = bool(connector)
+                uses_service_principal = any(sp_values)
+                if identity and not connector:
+                    errors.append(
+                        f"{row['source_cred_name']}: target_mgd_id_identity requires "
+                        "target_mgd_id_connector"
+                    )
+                if uses_managed_identity == uses_service_principal:
+                    errors.append(
+                        f"{row['source_cred_name']}: configure exactly one Azure credential method"
+                    )
+                elif uses_service_principal and not all(sp_values):
+                    errors.append(
+                        f"{row['source_cred_name']}: service-principal fields must all be set"
+                    )
     return errors
 
 

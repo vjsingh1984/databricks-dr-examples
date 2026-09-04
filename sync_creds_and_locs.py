@@ -18,25 +18,25 @@
 # external locations in the source/target. Note that all comparisons here are done on the *name* of the objects; this is
 # necessary since all other parameters will change when switching between metastores.
 #
-# Currently, we use PAT-based auth for the WorkspaceClient objects, so you must provide the host and token manually for
-# each workspace. You can update this to use other auth methods if desired. You may also wish to avoid including your
-# cloud object information in the provided CSVs, especially for Azure; this could be done by directly interfacing with
-# the cloud provider CLI/APIs within this script (or as part of an external workflow).
+# Workspace clients use Databricks unified authentication. Prefer workload
+# identity federation in automation and named CLI profiles for local use.
 
-import argparse
 import os
-from databricks.sdk import WorkspaceClient
-from databricks.sdk.service import catalog
-from dr_sync.csv_mapping import load_mapping
-from dr_sync.config import DRSyncConfig
-from dr_sync.log import setup_logging
 
-config = (
-    DRSyncConfig.from_env()
-    if os.environ.get("DR_SYNC_SOURCE_HOST")
-    else DRSyncConfig.from_common_module()
+from databricks.sdk.service import catalog
+
+from dr_sync.cli import configure_runtime
+from dr_sync.config import DRSyncConfig
+from dr_sync.csv_mapping import load_mapping
+from dr_sync.log import setup_logging
+from dr_sync.workspace import create_client
+
+config = DRSyncConfig.load()
+logger = (
+    configure_runtime(config, "Sync storage credentials and external locations between workspaces")
+    if __name__ == "__main__"
+    else setup_logging()
 )
-logger = setup_logging()
 target_host = config.target_host
 target_pat = config.target_token
 source_host = config.source_host
@@ -46,14 +46,14 @@ loc_mapping_file = config.loc_mapping_file
 cloud_type = config.cloud_type
 
 # create WorkspaceClient objects
-w_source = WorkspaceClient(host=source_host, token=source_pat)
-w_target = WorkspaceClient(host=target_host, token=target_pat)
+w_source = create_client(host=source_host, token=source_pat, profile=config.source_profile)
+w_target = create_client(host=target_host, token=target_pat, profile=config.target_profile)
 
 # get source and target credentials and external locations
-source_creds = [x for x in w_source.storage_credentials.list()]
-target_creds = [x for x in w_target.storage_credentials.list()]
-source_extloc = [x for x in w_source.external_locations.list()]
-target_extloc = [x for x in w_target.external_locations.list()]
+source_creds = list(w_source.storage_credentials.list())
+target_creds = list(w_target.storage_credentials.list())
+source_extloc = list(w_source.external_locations.list())
+target_extloc = list(w_target.external_locations.list())
 
 # compare source and target storage credentials
 # we can only do this by name since the URL and IDs will change between workspaces
@@ -78,9 +78,7 @@ for cred in creds_to_create:
         # get cred IAM role based off of name
         row = cred_lookup.get(cred_name)
         if row is None:
-            logger.error(
-                "Could not create credential %s. Please check mapping file.", cred_name
-            )
+            logger.error("Could not create credential %s. Please check mapping file.", cred_name)
             continue
         iam_role_arn = row["target_iam_role"]
 
@@ -99,20 +97,16 @@ for cred in creds_to_create:
         # get SP and Mgd ID info based off of name
         row = cred_lookup.get(cred_name)
         if row is None:
-            logger.error(
-                "Could not create credential %s. Please check mapping file.", cred_name
-            )
+            logger.error("Could not create credential %s. Please check mapping file.", cred_name)
             continue
         managed_id_connector = row.get("target_mgd_id_connector", "")
         managed_id_identity = row.get("target_mgd_id_identity", "")
         sp_directory = row.get("target_sp_directory", "")
         sp_appid = row.get("target_sp_appid", "")
-        sp_secret = row.get("target_sp_secret", "")
+        sp_secret_env = row.get("target_sp_secret_env", "")
 
-        if not managed_id_connector and not managed_id_identity and not sp_directory:
-            logger.error(
-                "Could not create credential %s. Please check mapping file.", cred_name
-            )
+        if not managed_id_connector and not sp_directory:
+            logger.error("Could not create credential %s. Please check mapping file.", cred_name)
             continue
 
         # create storage credential in target WS
@@ -121,17 +115,8 @@ for cred in creds_to_create:
             continue
         if managed_id_connector:
             cred_mgd_id = catalog.AzureManagedIdentityRequest(
-                access_connector_id=managed_id_connector
-            )
-            w_target.storage_credentials.create(
-                name=cred_name,
-                read_only=cred_read_only,
-                comment=cred_comment,
-                azure_managed_identity=cred_mgd_id,
-            )
-        elif managed_id_identity:
-            cred_mgd_id = catalog.AzureManagedIdentityRequest(
-                access_connector_id=managed_id_identity
+                access_connector_id=managed_id_connector,
+                managed_identity_id=managed_id_identity or None,
             )
             w_target.storage_credentials.create(
                 name=cred_name,
@@ -141,6 +126,7 @@ for cred in creds_to_create:
             )
         else:
             try:
+                sp_secret = os.environ[sp_secret_env]
                 cred_sp = catalog.AzureServicePrincipal(
                     directory_id=sp_directory,
                     application_id=sp_appid,
@@ -152,12 +138,13 @@ for cred in creds_to_create:
                     comment=cred_comment,
                     azure_service_principal=cred_sp,
                 )
-            except Exception:
+            except (KeyError, ValueError) as exc:
                 logger.error(
                     "Could not create credential %s. Please make sure that only one of "
-                    "managed_id_connector, managed_id_identity or service_principal info "
-                    "is provided in the mapping.",
+                    "managed identity or service-principal configuration is provided and "
+                    "that the named secret environment variable exists: %s",
                     cred_name,
+                    exc,
                 )
 
     elif cloud_type == "gcp":
@@ -193,17 +180,13 @@ for loc in locs_to_create:
     if cloud_type == "aws":
         row = loc_lookup.get(loc_name)
         if row is None:
-            logger.error(
-                "Could not create location %s. Please check mapping file.", loc_name
-            )
+            logger.error("Could not create location %s. Please check mapping file.", loc_name)
             continue
         url = row["target_url"]
         access_pt = row.get("target_access_pt", "")
 
         if url is None:
-            logger.error(
-                "Could not create location %s. Please check mapping file.", loc_name
-            )
+            logger.error("Could not create location %s. Please check mapping file.", loc_name)
             continue
 
         if config.dry_run:
@@ -232,16 +215,12 @@ for loc in locs_to_create:
     elif cloud_type == "azure":
         row = loc_lookup.get(loc_name)
         if row is None:
-            logger.error(
-                "Could not create location %s. Please check mapping file.", loc_name
-            )
+            logger.error("Could not create location %s. Please check mapping file.", loc_name)
             continue
         url = row["target_url"]
 
         if url is None:
-            logger.error(
-                "Could not create location %s. Please check mapping file.", loc_name
-            )
+            logger.error("Could not create location %s. Please check mapping file.", loc_name)
             continue
 
         if config.dry_run:
@@ -264,22 +243,3 @@ for loc in locs_to_create:
         continue
 
     logger.info("External location %s created.", loc_name)
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Sync storage credentials and external locations between workspaces"
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show planned operations without executing",
-    )
-    parser.add_argument(
-        "--log-level",
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Set logging level",
-    )
-    args = parser.parse_args()
-    config.dry_run = args.dry_run
-    logger = setup_logging(level=args.log_level)
