@@ -11,14 +11,10 @@
 #     firewall is configured; be sure to check your rules if you receive errors when trying to clone.
 #   - This script uses Serverless compute by default to avoid waiting for classic warehouse startup times.
 #
-# Params that must be specified below:
-#   -source_host: the hostname of the primary workspace.
-#   -source_pat: an access token for the primary workspace; must be an ADMIN user.
-#   -target_host: the hostname of the secondary workspace.
-#   -target_pat: an access token for the secondary workspace; must be an ADMIN user.
-#   -catalogs_to_copy: a list of the catalogs to be replicated between workspaces.
-#   -num_exec: the number of threads to spawn in the ThreadPoolExecutor.
-#   -target_share_id: the sharing identifier of the secondary metastore.
+# Configuration is loaded from DR_SYNC_* environment variables or common.py. Prefer
+# SOURCE/TARGET unified-auth profiles or workload identity; PATs are legacy-only. Grant
+# only the sharing, catalog, and SQL privileges this operation requires. Set both
+# workspaces/profiles, catalogs_to_copy, num_exec, and the target metastore ID.
 
 import time
 from concurrent.futures import ThreadPoolExecutor

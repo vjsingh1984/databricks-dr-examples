@@ -9,13 +9,10 @@
 # sync has already been performed. It will also only update permissions on objects that exist in the primary; i.e., if
 # an object exists in the secondary but not the primary, no updates will be applied.
 #
-# Params that must be specified below:
-#   -source_host: the hostname of the primary workspace.
-#   -source_pat: an access token for the primary workspace; must be an ADMIN user.
-#   -target_host: the hostname of the secondary workspace.
-#   -target_pat: an access token for the secondary workspace; must be an ADMIN user.
-#   -catalogs_to_copy: a list of the catalogs to be replicated between workspaces.
-#   -num_exec: the number of threads to spawn in the ThreadPoolExecutor.
+# Configuration is loaded from DR_SYNC_* environment variables or common.py. Prefer
+# SOURCE/TARGET unified-auth profiles or workload identity; PATs are legacy-only. Grant
+# only the source read and target grant-management privileges required by this operation.
+# Set both workspaces/profiles, catalogs_to_copy, and num_exec.
 
 from concurrent.futures import ThreadPoolExecutor
 from itertools import repeat

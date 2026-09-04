@@ -9,11 +9,10 @@
 # used. Storage URLs are not updated; they are just directly brought over to the secondary metastore. Files within the
 # volumes will not be replicated, since the underlying storage will be georeplicated.
 #
-# Params that must be specified below:
-#   -target_host: the hostname of the secondary workspace.
-#   -target_pat: an access token for the secondary workspace; must be an ADMIN user.
-#   -catalogs_to_copy: a list of the catalogs to be replicated; only volumes within these catalogs will be replicated.
-#   -num_exec: the number of threads to spawn in the ThreadPoolExecutor.
+# Configuration is loaded from DR_SYNC_* environment variables or common.py. Use a
+# TARGET unified-auth profile or workload identity; PATs are legacy-only. The identity
+# needs only the catalog privileges used below, not blanket workspace administration.
+# Set target workspace/profile, catalogs_to_copy, and num_exec.
 
 
 from concurrent.futures import ThreadPoolExecutor

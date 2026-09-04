@@ -8,7 +8,10 @@ In this section, we'll demonstrate how you can run one of the above scripts in a
 ![gitfolder](images/workflow_gitfolder.png)
 
 
-2. Inside the newly created Git Folder, navigate to the common.py folder and make the appropriate edits for your environment. ie. Change cloud_type to your corresponding cloud provider, set your source_host, source_pat, target_host, target_pat, and the catalogs you want to replicate
+2. Configure non-secret settings through job environment variables or `common.py`. Prefer
+   `SOURCE` and `TARGET` unified-auth profiles for an interactive job, or workload identity
+   federation for automation. Do not put PATs or other credentials in `common.py`; the
+   `source_pat` and `target_pat` fields are legacy-only migration fallbacks.
 
 ![common](images/workflow_commonpy.png)
 
@@ -21,16 +24,22 @@ In this section, we'll demonstrate how you can run one of the above scripts in a
 
 ![createjob](images/workflow_createjob.png)
 
-5. In the above screenshot we set the type to python script, source is workspace, and we selected the path of the sync_catalogs_and_schemas.py in our git folder. You can use serverless or classic compute, but ensure that there is network connectivity from the compute to the databricks front end api.
+5. In the above screenshot the task type is Python script, the source is Workspace, and the
+   selected file is `sync_catalogs_and_schemas.py` in the Git folder. Serverless or classic
+   compute can be used, but the compute must reach both workspace API origins.
 
-6. Under Environments and Variables, select the drop down and configure a new environment with the requests and databricks-sdk library. Click Confirm and Click Create Task.
+6. Under Environments and Variables, install this repository as a package (which pins
+   `databricks-sdk==0.123.0`) or install that SDK version explicitly. Add the required
+   `DR_SYNC_*` variables without secret values; inject credentials through the Databricks
+   secret/environment facilities. Click Confirm and Create Task.
 
 ![libraries](images/workflow_libraries.png)
 
-7. Click Run Now:
+7. Add `--dry-run` as a task parameter and click Run Now. Review the plan before running a
+   second time without `--dry-run`:
 
 ![run](images/workflow_run.png)
 
 8. The successful run should yield similar results:
 
-![results](images/workflow_results.png) 
+![results](images/workflow_results.png)

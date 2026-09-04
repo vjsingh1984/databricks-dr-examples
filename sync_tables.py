@@ -11,19 +11,12 @@
 #
 # Please note that this script uses Serverless compute by default to avoid waiting for classic warehouse startup times.
 #
-# Params that must be specified below:
-#   -landing_zone_url: the bucket, storage account, etc. where data will be written. This _must_ be in the secondary
-#    region, not the primary region. It _must_ be accessible from both the primary and secondary workspace.
-#   -source_host: the hostname of the primary workspace.
-#   -source_pat: an access token for the primary workspace; must be an ADMIN user.
-#   -target_host: the hostname of the secondary workspace.
-#   -target_pat: an access token for the secondary workspace; must be an ADMIN user.
-#   -catalogs_to_copy: a list of the catalogs to be replicated between workspaces.
-#   -manifest_name: the name of the manifest file that will be generated to track table copies.
-#   -num_exec: the number of threads to spawn in the ThreadPoolExecutor.
-#   -warehouse_size: the size of the serverless warehouse to be created.
+# Configuration is loaded from DR_SYNC_* environment variables or common.py. Prefer
+# SOURCE/TARGET unified-auth profiles or workload identity; PATs are legacy-only. The
+# landing zone must be in the secondary region and reachable by both workspaces. Set both
+# workspaces/profiles, catalogs_to_copy, manifest_name, num_exec, and warehouse_size.
 #
-# To improve throughput, this script uses TheadPoolExecutors to parallelize submission of statements to the databricks
+# To improve throughput, this script uses ThreadPoolExecutor to parallelize submission of statements to Databricks
 # warehouse. Table load statuses will be written to the delta table at {landing_zone_url}/sync_status_{time.time_ns()}.
 
 

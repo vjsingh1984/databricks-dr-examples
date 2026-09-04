@@ -1,171 +1,165 @@
-# databricks-dr-examples
-A collection of minimal example scripts for setting up Disaster Recovery for Databricks.
+# Databricks disaster-recovery examples
 
-This code is provided as-is and is meant to serve as a set of baseline examples. You may need to alter these scripts to work in your environment.
+Tested Python examples for copying selected Unity Catalog metadata, grants, and data from a
+primary Databricks workspace to a secondary workspace. This fork is based on
+`gregwood-db/databricks-dr-examples` and adds unified authentication, validation, dry-run
+controls, packaging, and CI coverage.
 
-### Authentication and cross-workspace connectivity
+These are baseline examples, not a complete recovery product. Validate generated resources,
+data freshness, grants, networking, regional service availability, and an actual failover and
+failback procedure before relying on them for a recovery objective.
 
-The scripts use the Databricks SDK unified-authentication chain. For local use,
-configure distinct `SOURCE` and `TARGET` CLI profiles and copy `.env.example`.
-For CI, prefer [workload identity federation](https://docs.databricks.com/aws/en/dev-tools/auth/oauth-federation-provider), including
-[GitHub OIDC](https://docs.databricks.com/aws/en/dev-tools/ci-cd/github), instead of long-lived personal access tokens. Grant the automation identity only the Unity Catalog and workspace privileges required by the selected operation.
+## Supported runtime and authentication
 
-These scripts generally assume that they will be run on a notebook in the primary workspace, and that the workspace can directly access the secondary workspace via SDK; this may not always be true in your environment. You have two options if connectivity issues are preventing scripts from running:
-- Alter the workspace networking to allow connectivity; this may involve adjusting firewalls, adding peering, etc.
-- Run the scripts remotely using Databricks Connect
+- Python 3.10, 3.11, 3.12, or 3.13
+- `databricks-sdk==0.123.0`
+- HTTPS workspace origins only
+- Databricks SDK unified authentication
 
-In the latter option, the following adjustments need to be made:
-- Set up [Databricks Connect](https://docs.databricks.com/en/dev-tools/databricks-connect/python/index.html) in your environment
-- In all scripts, add an import statement for Databricks Connect, i.e., `from databricks.connect import DatabricksSession`
-- In all scripts, instantiate a Spark Session, i.e., `spark = DatabricksSession.builder.profile("<profile-name>").getOrCreate()`
+For local use, configure distinct `SOURCE` and `TARGET` Databricks CLI profiles. For CI,
+prefer [workload identity federation](https://docs.databricks.com/aws/en/dev-tools/auth/oauth-federation-provider),
+including [GitHub OIDC](https://docs.databricks.com/aws/en/dev-tools/ci-cd/github), instead of
+long-lived personal access tokens. A workflow-identity service principal used by a script must
+be assigned to both workspaces with only the Unity Catalog and workspace privileges required by
+that operation. If the workspaces require different identities, use distinct CLI profiles or
+extend the client factory; the current environment-based unified-auth path supplies one identity
+to both clients.
 
-These changes will allow the code to run remotely on a local machine or cloud VM.
+`DR_SYNC_SOURCE_TOKEN` and `DR_SYNC_TARGET_TOKEN` remain migration-only PAT fallbacks. Inject
+them at runtime, never commit them, and never place secrets in mapping CSV files.
 
-## Repo Contents
-Snippets that demonstrate basic functionality (located in /examples/):
-- clone_to_secondary.py: performs `DEEP CLONE` on a set of catalogs in the primary to a storage location in the secondary region.
-- clone_to_secondary_par.py: parallelized version of clone_to_secondary.py.
-- create_tables_simple.py: simple script that must be run *in the secondary region* to register managed/external tables based on the output of clone_to_secondary.py.
-- sync_views.py: simple script to sync views; this will need to be updated per your environment.
+## Execution boundaries
 
+The following scripts use workspace REST APIs and can run from a local machine or CI runner with
+network access to both workspace front ends:
 
-Code samples that show more comprehensive end-to-end functionality:
-- sync_creds_and_locs.py: script to sync storage credentials and external locations between primary and secondary metastores. Run locally or on either primary/secondary.
-- sync_catalogs_and_schemas.py: script to sync all catalogs and schemas from a primary metastore to a secondary metastore. Run locally or on either primary/secondary.
-- sync_tables.py: performs a deep clone of all managed external tables, and registers those tables in the secondary region.
-- sync_grs_ext.py: sync _metadata only_ for external tables that have already been replicated via cloud provider georeplication. No data is copied, and storage URLs on both workspaces will be the same.
-- sync_ext_volumes.py: sync _metadata only_ for external volumes that have already been replicated via cloud provider georeplication.
-- sync_perms.py: sync all permissions related to UC tables, volumes, schemas and catalogs from primary to secondary metastore.
-- sync_shared_tables.py: sync tables using Delta Sharing. All tables will be imported to the secondary region as managed tables.
+- `sync_creds_and_locs.py`
+- `sync_catalogs_and_schemas.py`
+- `sync_uc_models.py`
 
-## How to use this Repository
+The following scripts also reference the active `spark` session and are intended for a
+Databricks notebook/job, or for a correctly configured Databricks Connect environment:
 
-### Prerequisites
-Before running the script, make sure you have the following:
+- `sync_tables.py`
+- `sync_grs_ext.py`
+- `sync_ext_volumes.py`
+- `sync_perms.py`
+- `sync_shared_tables.py`
+- `sync_views.py`
+- the scripts under `examples/`
 
-- A Databricks workspace with Admin privileges to access and manage catalogs and schemas.
-  - Need to have CREATE CATALOG Privileges on the Metastore
-  - Need to have CREATE EXTERNAL LOCATION Privileges on the Metastore
-  - Need to have CREATE STORAGE CREDENTIAL Privileges on the Metastore
-- Databricks CLI installed and configured with your workspace. Follow the Databricks CLI installation guide for setup instructions.
-  - If using in a notebook, make sure the latest version is installed.
-  - Requests library installed for making API calls to Databricks/
-- Python 3.10+ and pip installed on your local machine.
+See the [Databricks Connect guide](https://docs.databricks.com/en/dev-tools/databricks-connect/python/index.html)
+if you need to supply that Spark session remotely.
 
-Clone this repository to your local machine:
-```
-git clone https://github.com/gregwood-db/databricks-dr-examples.git
+## Install
+
+```bash
+git clone https://github.com/vjsingh1984/databricks-dr-examples.git
 cd databricks-dr-examples
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install .
 ```
 
-### Setting up variables and parameters
-Set the following variable/parameter values in `common.py`; these will be used throughout the other scripts.
-  - `cloud_type`: Cloud provider where workspaces exist (azure, aws, or gcp)
-  - `cred_mapping_file`: The mapping file for credentials, i.e., `data/azure_cred_mapping.csv`
-  - `loc_mapping_file`: The location mapping file, i.e. `data/ext_location_mapping.csv`
-  - `catalog_mapping_file`: The catalog mapping file, i.e. `data/catalog_mapping.csv`
-  - `schema_mapping_file`: The schema mapping file, i.e. `data/schema_mapping.csv`
-  - `source_host`: Source/Primary Workspace URL, including leading `https://`
-  - `target_host`: Target/Secondary Workspace URL, including leading `https://`
-  - `source_profile`: Source/Primary Databricks CLI profile
-  - `target_profile`: Target/Secondary Databricks CLI profile
-  - `source_pat` / `target_pat`: legacy-only token fallbacks, injected at runtime and never committed
-  - `catalogs_to_copy`: A list of strings, containing names of catalogs to replicate
-  - `metastore_id`: The global unique metastore ID of the secondary/target metastore
-  - `landing_zone_url`: ADLS/S3/GCS location used to land intermediate data in the secondary region
-  - `num_exec`: Number of parallel threads to execute (when parallelism is used)
-  - `warehouse_size`: The size of the serverless SQL warehouse used in the secondary workspace
-  - `response_backoff`: The polling backoff for checking query state when creating tables/views
-  - `manifest_name`: the name of the table manifest Delta file, if using sync_tables.py
+`.env.example` is a documented template; the scripts do not parse `.env` files automatically.
+Export the selected `DR_SYNC_*` variables with your shell, CI platform, or secret manager, or
+configure the backward-compatible non-secret defaults in `common.py`.
 
+Setting any `DR_SYNC_*` variable selects environment configuration instead of `common.py`.
+Important variables include:
 
-### Syncing External Locations and Credentials
+| Variable | Meaning |
+| --- | --- |
+| `DR_SYNC_CLOUD_TYPE` | `aws`, `azure`, or `gcp` |
+| `DR_SYNC_SOURCE_PROFILE`, `DR_SYNC_TARGET_PROFILE` | Distinct local unified-auth profiles |
+| `DR_SYNC_SOURCE_HOST`, `DR_SYNC_TARGET_HOST` | HTTPS workspace origins; required with PAT fallback |
+| `DR_SYNC_CATALOGS_TO_COPY` | Comma-separated catalog names; must not be empty |
+| `DR_SYNC_CRED_MAPPING_FILE` | Credential mapping CSV |
+| `DR_SYNC_LOC_MAPPING_FILE` | External-location mapping CSV |
+| `DR_SYNC_CATALOG_MAPPING_FILE` | Catalog mapping CSV |
+| `DR_SYNC_SCHEMA_MAPPING_FILE` | Schema mapping CSV |
+| `DR_SYNC_LANDING_ZONE_URL` | Intermediate storage for deep-clone workflows |
+| `DR_SYNC_METASTORE_ID` | Target metastore ID |
+| `DR_SYNC_NUM_EXEC` | Worker count, at least 1 |
+| `DR_SYNC_DRY_RUN` | `true`, `1`, or `yes` to suppress mutations |
 
-1. Make sure `common.py` is updated with all relevant parameters
+Run every operation in dry-run mode first:
 
-2. Update the credential and external location mapping files:
-   - <cloud>_cred_mapping.csv: 
-     - `source_cred_name` should contain the storage credential name in the source metastore
-     - for AWS, `target_iam_role` should contain the ARN for the iam role to be used in the target metastore
-     - for Azure, only ONE of the following should be used:
-       - `target_mgd_id_connector`: Azure Databricks access connector resource ID (preferred)
-       - `target_mgd_id_identity`: optional user-assigned managed-identity resource ID paired with the access connector
-       - `target_sp_directory`, `target_sp_appid`, and `target_sp_secret_env`: legacy service-principal fields; the final value names an environment variable containing the secret, never the secret itself
-   - ext_location_mapping.csv:
-     - `source_loc_name` should contain the external location name in the source metastore
-     - `target_url` should contain the storage URL to be used for the location in the secondary metastore
-     - `target_access_pt` should contain the S3 access point to be used (optional, only for AWS)
-
-3. Once you have updated the configuration, you can run the script with the following command:
-
-```
-python sync_creds_and_locs.py
+```bash
+export DR_SYNC_SOURCE_PROFILE=SOURCE
+export DR_SYNC_TARGET_PROFILE=TARGET
+export DR_SYNC_CATALOGS_TO_COPY=my-catalog1,my-catalog2
+python sync_catalogs_and_schemas.py --dry-run
 ```
 
-### Syncing Catalogs and Schemas
+All top-level sync scripts parse `--dry-run` and `--log-level` before workspace operations.
+Review the plan, mappings, target identities, and storage paths before removing `--dry-run`.
 
-1. Make sure `common.py` is updated with all relevant parameters
+## Mapping files
 
-2. Update the catalog and schema mapping CSVs:
-   - catalog_mapping.csv: `source_catalog` should contain a list of the source catalog names to be migrated, and `target_storage_root` should contain the storage root location for each catalog in the target metastore
-   - schema_mapping.csv: `source_catalog` and `source_schema` should contain the catalogs and schemas in the source metastore, and `target_storage_root` should contain the storage root location for each schema in the target metastore
+### Storage credentials and external locations
 
-3. Once you have updated the configuration, you can run the script with the following command:
+`data/<cloud>_cred_mapping.csv` maps a source credential to a target cloud identity:
 
+- AWS: `target_iam_role` is the target IAM role ARN.
+- Azure managed identity: `target_mgd_id_connector` is the Databricks access connector resource
+  ID; `target_mgd_id_identity` is the optional user-assigned managed-identity resource ID.
+- Azure legacy service principal: `target_sp_directory`, `target_sp_appid`, and
+  `target_sp_secret_env`; the final field is the name of an environment variable containing the
+  secret, not the secret itself.
+- GCP: use the target service-account fields shown in `data/gcp_cred_mapping.csv`.
+
+`data/ext_location_mapping.csv` maps `source_loc_name` to `target_url`; `target_access_pt` is an
+optional AWS access point.
+
+### Catalogs and schemas
+
+- `data/catalog_mapping.csv` maps `source_catalog` to `target_storage_root`.
+- `data/schema_mapping.csv` maps `source_catalog` and `source_schema` to
+  `target_storage_root`.
+
+Treat mapping files as non-secret configuration. Validate identifiers and storage ownership in
+the target region before execution.
+
+## Operation guide
+
+| Goal | Script | Important prerequisite |
+| --- | --- | --- |
+| Credentials and external locations | `sync_creds_and_locs.py` | Target cloud identities exist |
+| Catalogs and schemas | `sync_catalogs_and_schemas.py` | Credentials/locations are ready |
+| Managed tables via landing storage | `sync_tables.py` | Spark plus target landing zone |
+| External table metadata | `sync_grs_ext.py` | Cloud data replication is complete |
+| External volume metadata | `sync_ext_volumes.py` | Cloud data replication is complete |
+| Views | `sync_views.py` | Referenced objects exist in target |
+| Grants | `sync_perms.py` | Principals and securables exist in target |
+| Managed tables via Delta Sharing | `sync_shared_tables.py` | Sharing and Spark are configured |
+| Unity Catalog models | `sync_uc_models.py` | Model dependencies exist in target |
+
+The account or service principal needs only the privileges required by the selected operation.
+Common examples include `CREATE CATALOG`, `CREATE EXTERNAL LOCATION`, and
+`CREATE STORAGE CREDENTIAL`; do not grant broad metastore administration by default.
+
+## Development and verification
+
+The lock file is hash-pinned for repeatable CI installs. To reproduce the gates:
+
+```bash
+python -m pip install --require-hashes -r requirements-ci.txt
+ruff check .
+ruff format --check .
+bandit -q -r dr_sync *.py examples/*.py
+pytest --cov=dr_sync --cov-branch --cov-fail-under=80
+python -m build
 ```
-python sync_catalogs_and_schemas.py
-```
 
-### Syncing Tables
+CI tests Python 3.10, 3.12, and 3.13, audits dependencies, builds the wheel, checks documentation
+links, and enforces at least 80% combined line/branch coverage.
 
-Below are two options for syncing tables. Option 1 leverages Delta sharing to clone the tables, whereas Option 2 requires you to delta deep clone the tables in the source/primary region to an intermediary cloud storage bucket before re-creating the tables as managed tables in the target/secondary metastore.
+Additional walkthroughs:
 
-#### Option 1: Syncing Managed Tables via Delta Sharing
+- [Azure managed-identity configuration](docs/azure_usage_guide.md)
+- [Databricks Workflow example](docs/Databricks%20Workflow%20Example.md)
 
-1. Make sure `common.py` is updated with all relevant parameters
+## License
 
-2. Once you have updated the configuration, you can run the script with the following command:
-
-```
-python sync_shared_tables.py
-```
-
-#### Option 2: Syncing Managed Tables with an Intermediary Storage Account
-
-1. Make sure `common.py` is updated with all relevant parameters
-
-2. Once you have updated the configuration, you can run the script with the following command:
-
-```
-python sync_tables.py
-```
-
-#### Option 3: Syncing External Tables
-
-1. Make sure `common.py` is updated with all relevant parameters
-
-2. Once you have updated the configuration, you can run the script with the following command:
-
-```
-python sync_grs_ext.py
-```
-
-### Syncing External Volumes
-
-1. Make sure `common.py` is updated with all relevant parameters
-
-2. Once you have updated the configuration, you can run the script with the following command:
-
-```
-python sync_ext_volumes.py
-```
-
-### Syncing Views
-
-1. Make sure `common.py` is updated with all relevant parameters
-
-2. Once you have updated the configuration, you can run the script with the following command:
-
-```
-python sync_views.py
-```
+Apache License 2.0; see [LICENSE](LICENSE).
