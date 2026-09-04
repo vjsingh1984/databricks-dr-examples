@@ -1,2 +1,16 @@
 # Databricks notebook builtins (spark, sql, display) are injected by the runtime.
+target-version = "py310"
+line-length = 100
 builtins = ["spark", "sql", "display"]
+
+[lint]
+select = ["B", "BLE", "C4", "E4", "E7", "E9", "F", "I", "RUF", "S", "UP"]
+ignore = ["S101"]
+
+[lint.per-file-ignores]
+# The operational scripts deliberately isolate one resource failure from the
+# remainder of a DR batch and turn it into a per-resource status record.
+"sync_*.py" = ["BLE001"]
+"examples/*.py" = ["BLE001"]
+"dr_sync/thread_utils.py" = ["BLE001"]
+"tests/*.py" = ["S106"]

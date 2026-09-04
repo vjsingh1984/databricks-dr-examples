@@ -16,22 +16,23 @@
 #   -num_exec: the number of threads to spawn in the ThreadPoolExecutor.
 
 
-import argparse
-import os
-from itertools import repeat
-from databricks.sdk import WorkspaceClient
-from databricks.sdk.service import catalog
 from concurrent.futures import ThreadPoolExecutor
+from itertools import repeat
+
 from databricks.sdk.errors.platform import ResourceAlreadyExists
+from databricks.sdk.service import catalog
+
+from dr_sync.cli import configure_runtime
 from dr_sync.config import DRSyncConfig
 from dr_sync.log import setup_logging
+from dr_sync.workspace import create_client
 
-config = (
-    DRSyncConfig.from_env()
-    if os.environ.get("DR_SYNC_SOURCE_HOST")
-    else DRSyncConfig.from_common_module()
+config = DRSyncConfig.load()
+logger = (
+    configure_runtime(config, "Sync external volumes between workspaces")
+    if __name__ == "__main__"
+    else setup_logging()
 )
-logger = setup_logging()
 target_host = config.target_host
 target_pat = config.target_token
 source_host = config.source_host
@@ -42,9 +43,7 @@ num_exec = config.num_exec
 
 # helper function to create volumes and set appropriate owner
 def create_volume(w, catalog_name, schema_name, volume_name, location, owner):
-    logger.info(
-        "Creating volume %s in %s.%s...", volume_name, catalog_name, schema_name
-    )
+    logger.info("Creating volume %s in %s.%s...", volume_name, catalog_name, schema_name)
 
     # dry-run guard: log what would be created without executing
     if config.dry_run:
@@ -74,9 +73,7 @@ def create_volume(w, catalog_name, schema_name, volume_name, location, owner):
 
     # if volume already exists, just update the owner (in case it has changed)
     except ResourceAlreadyExists:
-        _ = w.volumes.update(
-            name=f"{catalog_name}.{schema_name}.{volume_name}", owner=owner
-        )
+        _ = w.volumes.update(name=f"{catalog_name}.{schema_name}.{volume_name}", owner=owner)
         return {
             "volume": f"{catalog_name}.{schema_name}.{volume_name}",
             "status": "already_exists",
@@ -91,7 +88,7 @@ def create_volume(w, catalog_name, schema_name, volume_name, location, owner):
 
 
 # create the WorkspaceClient pointed at the target WS
-w_target = WorkspaceClient(host=target_host, token=target_pat)
+w_target = create_client(host=target_host, token=target_pat, profile=config.target_profile)
 
 # pull system tables from source ws
 system_info = spark.sql("SELECT * FROM system.information_schema.volumes")
@@ -129,31 +126,10 @@ for cat in catalogs_to_copy:
             if thread["status"] == "success":
                 logger.info("Created volume %s.", thread["volume"])
             elif thread["status"] == "already_exists":
-                logger.warning(
-                    "Skipped volume %s because it already exists.", thread["volume"]
-                )
+                logger.warning("Skipped volume %s because it already exists.", thread["volume"])
             else:
                 logger.error(
                     "Could not create volume %s; error: %s",
                     thread["volume"],
                     thread["status"],
                 )
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Sync external volumes between workspaces"
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show planned operations without executing",
-    )
-    parser.add_argument(
-        "--log-level",
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Set logging level",
-    )
-    args = parser.parse_args()
-    config.dry_run = args.dry_run
-    logger = setup_logging(level=args.log_level)

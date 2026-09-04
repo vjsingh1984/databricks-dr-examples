@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling==1.28.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "databricks-dr-examples"
+version = "0.1.0"
+description = "Tested Databricks disaster-recovery example utilities"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+dependencies = [
+  "databricks-sdk==0.123.0",
+  "pandas==2.3.3",
+]
+
+[project.optional-dependencies]
+test = [
+  "bandit>=1.9,<2",
+  "hatchling==1.28.0",
+  "pip-audit==2.10.1",
+  "pytest==9.0.3",
+  "pytest-cov==7.1.0",
+  "ruff==0.16.6",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["dr_sync"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-config --strict-markers"
+
+[tool.coverage.run]
+branch = true
+source = ["dr_sync"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true

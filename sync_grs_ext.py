@@ -23,27 +23,32 @@
 # warehouse. All table load statuses will be written to the delta table at {target_bucket}/sync_status_{time.time_ns()}.
 
 
-import argparse
-import os
 import time
-import pandas as pd
-from itertools import repeat
-from databricks.sdk import WorkspaceClient
 from concurrent.futures import ThreadPoolExecutor
+from itertools import repeat
+
+import pandas as pd
+
+from dr_sync.cli import configure_runtime
+from dr_sync.config import DRSyncConfig
+from dr_sync.exceptions import StatementError
+from dr_sync.log import setup_logging
 from dr_sync.sql_utils import (
+    drop_table_if_exists,
     execute_statement_sync,
     managed_warehouse,
-    drop_table_if_exists,
+    qualified_identifier,
+    quote_string_literal,
 )
-from dr_sync.exceptions import StatementError
-from dr_sync.config import DRSyncConfig
-from dr_sync.log import setup_logging
+from dr_sync.workspace import create_client
 
-logger = setup_logging()
-config = (
-    DRSyncConfig.from_env()
-    if os.environ.get("DR_SYNC_SOURCE_HOST")
-    else DRSyncConfig.from_common_module()
+config = DRSyncConfig.load()
+logger = (
+    configure_runtime(
+        config, "Sync GRS-replicated external tables to secondary Databricks workspace"
+    )
+    if __name__ == "__main__"
+    else setup_logging()
 )
 target_host = config.target_host
 target_pat = config.target_token
@@ -60,7 +65,8 @@ def load_table(w, catalog, schema, table_name, location, warehouse):
     logger.info("Creating EXTERNAL table %s.%s.%s...", catalog, schema, table_name)
 
     try:
-        sqlstring = f"CREATE TABLE {catalog}.{schema}.{table_name} USING delta LOCATION '{location}'"
+        target = qualified_identifier(catalog, schema, table_name)
+        sqlstring = f"CREATE TABLE {target} USING delta LOCATION {quote_string_literal(location)}"
         execute_statement_sync(w, warehouse, sqlstring, backoff=response_backoff)
 
         return {
@@ -102,19 +108,20 @@ loaded_table_status = []
 loaded_table_times = []
 
 # create the WorkspaceClient pointed at the target WS
-w_target = WorkspaceClient(host=target_host, token=target_pat)
+w_target = create_client(host=target_host, token=target_pat, profile=config.target_profile)
 
 if config.dry_run:
     # In dry-run mode, log what would happen without creating warehouses or executing SQL
     for cat in catalogs_to_copy:
         filtered_tables = spark.sql(
-            f"""
+            """
             SELECT table_schema, table_name, storage_path
             FROM system.information_schema.tables
-            WHERE table_catalog = '{cat}'
+            WHERE table_catalog = :catalog
               AND table_schema != 'information_schema'
               AND table_type = 'EXTERNAL'
-        """
+        """,
+            args={"catalog": cat},
         ).collect()
 
         schemas = [row["table_schema"] for row in filtered_tables]
@@ -126,7 +133,7 @@ if config.dry_run:
             len(table_names),
             cat,
         )
-        for schema, table_name, location in zip(schemas, table_names, table_locs):
+        for schema, table_name, location in zip(schemas, table_names, table_locs, strict=False):
             logger.info(
                 "[DRY RUN] Would drop and recreate external table %s.%s.%s at %s",
                 cat,
@@ -141,13 +148,14 @@ else:
         # we also skip views; these need to be created separately since they cannot be cloned.
         for cat in catalogs_to_copy:
             filtered_tables = spark.sql(
-                f"""
+                """
                 SELECT table_schema, table_name, storage_path
                 FROM system.information_schema.tables
-                WHERE table_catalog = '{cat}'
+                WHERE table_catalog = :catalog
                   AND table_schema != 'information_schema'
                   AND table_type = 'EXTERNAL'
-            """
+            """,
+                args={"catalog": cat},
             ).collect()
 
             # get schemas, tables and types in list form
@@ -227,22 +235,3 @@ else:
             .format("delta")
             .save(f"{landing_zone_url}/sync_status_{time.time_ns()}")
         )
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Sync GRS-replicated external tables to secondary Databricks workspace"
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show planned operations without executing",
-    )
-    parser.add_argument(
-        "--log-level",
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Set logging level",
-    )
-    args = parser.parse_args()
-    config.dry_run = args.dry_run
-    logger = setup_logging(level=args.log_level)

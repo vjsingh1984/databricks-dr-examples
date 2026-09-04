@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install project and quality tools
+        run: python -m pip install --require-hashes -r requirements-ci.txt
+      - name: Check formatting and lint
+        run: |
+          ruff format --check .
+          ruff check .
+      - name: Scan source for high-severity findings
+        run: bandit -r dr_sync sync_*.py -lll -q
+      - name: Audit the resolved environment
+        run: pip-audit --strict --require-hashes -r requirements-ci.txt
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install project and test tools
+        run: python -m pip install --require-hashes -r requirements-ci.txt
+      - name: Test with line and branch coverage
+        run: python -m pytest --cov=dr_sync --cov-branch --cov-report=term-missing --cov-fail-under=80
+      - name: Compile operational examples
+        run: python -m compileall -q dr_sync sync_*.py examples
+
+  dependency-review:
+    name: Dependency Review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
+        with:
+          fail-on-severity: moderate
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install hash-pinned build backend
+        run: python -m pip install --require-hashes -r requirements-ci.txt
+      - name: Build wheel without undeclared dependencies
+        run: python -m pip wheel --no-deps --no-build-isolation . --wheel-dir dist
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wheel
+          path: dist/*.whl
+
+  ci-success:
+    name: CI Success
+    if: always()
+    needs: [lint, test, dependency-review, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify required jobs
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          LINT_RESULT: ${{ needs.lint.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          DEPENDENCY_REVIEW_RESULT: ${{ needs.dependency-review.result }}
+        run: |
+          set -euo pipefail
+          test "${LINT_RESULT}" = "success"
+          test "${TEST_RESULT}" = "success"
+          test "${BUILD_RESULT}" = "success"
+          if [ "${EVENT_NAME}" = "pull_request" ]; then
+            test "${DEPENDENCY_REVIEW_RESULT}" = "success"
+          else
+            test "${DEPENDENCY_REVIEW_RESULT}" = "skipped"
+          fi

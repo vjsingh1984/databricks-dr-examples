@@ -3,7 +3,13 @@ A collection of minimal example scripts for setting up Disaster Recovery for Dat
 
 This code is provided as-is and is meant to serve as a set of baseline examples. You may need to alter these scripts to work in your environment.
 
-### Notes on cross-workspace connectivity
+### Authentication and cross-workspace connectivity
+
+The scripts use the Databricks SDK unified-authentication chain. For local use,
+configure distinct `SOURCE` and `TARGET` CLI profiles and copy `.env.example`.
+For CI, prefer [workload identity federation](https://docs.databricks.com/aws/en/dev-tools/auth/oauth-federation-provider), including
+[GitHub OIDC](https://docs.databricks.com/aws/en/dev-tools/ci-cd/github), instead of long-lived personal access tokens. Grant the automation identity only the Unity Catalog and workspace privileges required by the selected operation.
+
 These scripts generally assume that they will be run on a notebook in the primary workspace, and that the workspace can directly access the secondary workspace via SDK; this may not always be true in your environment. You have two options if connectivity issues are preventing scripts from running:
 - Alter the workspace networking to allow connectivity; this may involve adjusting firewalls, adding peering, etc.
 - Run the scripts remotely using Databricks Connect
@@ -44,7 +50,7 @@ Before running the script, make sure you have the following:
 - Databricks CLI installed and configured with your workspace. Follow the Databricks CLI installation guide for setup instructions.
   - If using in a notebook, make sure the latest version is installed.
   - Requests library installed for making API calls to Databricks/
-- Python 3.6+ and pip installed on your local machine.
+- Python 3.10+ and pip installed on your local machine.
 
 Clone this repository to your local machine:
 ```
@@ -61,8 +67,9 @@ Set the following variable/parameter values in `common.py`; these will be used t
   - `schema_mapping_file`: The schema mapping file, i.e. `data/schema_mapping.csv`
   - `source_host`: Source/Primary Workspace URL, including leading `https://`
   - `target_host`: Target/Secondary Workspace URL, including leading `https://`
-  - `source_pat`: Personal Access Tokens (PAT) for Source/Primary Workspace
-  - `target_pat`: Personal Access Tokens (PAT) for Target/Secondary Workspace URL
+  - `source_profile`: Source/Primary Databricks CLI profile
+  - `target_profile`: Target/Secondary Databricks CLI profile
+  - `source_pat` / `target_pat`: legacy-only token fallbacks, injected at runtime and never committed
   - `catalogs_to_copy`: A list of strings, containing names of catalogs to replicate
   - `metastore_id`: The global unique metastore ID of the secondary/target metastore
   - `landing_zone_url`: ADLS/S3/GCS location used to land intermediate data in the secondary region
@@ -81,9 +88,9 @@ Set the following variable/parameter values in `common.py`; these will be used t
      - `source_cred_name` should contain the storage credential name in the source metastore
      - for AWS, `target_iam_role` should contain the ARN for the iam role to be used in the target metastore
      - for Azure, only ONE of the following should be used:
-       - `target_mgd_id_connector`: used for standard access connectors (i.e., azure managed identities)
-       - `target_mgd_id_identity`: used for user-assigned managed identities
-       - `target_sp_directory`, `target_sp_appid`, and `target_sp_secret`: if a service principal is used for access (uncommon)
+       - `target_mgd_id_connector`: Azure Databricks access connector resource ID (preferred)
+       - `target_mgd_id_identity`: optional user-assigned managed-identity resource ID paired with the access connector
+       - `target_sp_directory`, `target_sp_appid`, and `target_sp_secret_env`: legacy service-principal fields; the final value names an environment variable containing the secret, never the secret itself
    - ext_location_mapping.csv:
      - `source_loc_name` should contain the external location name in the source metastore
      - `target_url` should contain the storage URL to be used for the location in the secondary metastore

@@ -20,34 +20,35 @@
 #   -num_exec: the number of threads to spawn in the ThreadPoolExecutor.
 #   -target_share_id: the sharing identifier of the secondary metastore.
 
-import argparse
-import os
 import time
-import pandas as pd
-from itertools import repeat
-from databricks.sdk import WorkspaceClient
 from concurrent.futures import ThreadPoolExecutor
+from itertools import repeat
+
+import pandas as pd
 from databricks.sdk.errors.platform import BadRequest
-from databricks.sdk.service.catalog import Privilege, PermissionsChange
+from databricks.sdk.service.catalog import PermissionsChange, Privilege
 from databricks.sdk.service.sharing import (
     AuthenticationType,
-    SharedDataObjectUpdate,
-    SharedDataObjectUpdateAction,
     SharedDataObject,
     SharedDataObjectDataObjectType,
     SharedDataObjectStatus,
+    SharedDataObjectUpdate,
+    SharedDataObjectUpdateAction,
 )
-from dr_sync.sql_utils import execute_statement_sync, managed_warehouse
-from dr_sync.exceptions import StatementError
-from dr_sync.config import DRSyncConfig
-from dr_sync.log import setup_logging
 
-config = (
-    DRSyncConfig.from_env()
-    if os.environ.get("DR_SYNC_SOURCE_HOST")
-    else DRSyncConfig.from_common_module()
+from dr_sync.cli import configure_runtime
+from dr_sync.config import DRSyncConfig
+from dr_sync.exceptions import StatementError
+from dr_sync.log import setup_logging
+from dr_sync.sql_utils import execute_statement_sync, managed_warehouse, qualified_identifier
+from dr_sync.workspace import create_client
+
+config = DRSyncConfig.load()
+logger = (
+    configure_runtime(config, "Sync tables via Delta Sharing to secondary Databricks workspace")
+    if __name__ == "__main__"
+    else setup_logging()
 )
-logger = setup_logging()
 target_host = config.target_host
 target_pat = config.target_token
 source_host = config.source_host
@@ -65,10 +66,9 @@ def clone_table(w, source_catalog, target_catalog, schema, table_name, warehouse
 
     logger.info("Cloning table %s.%s.%s...", source_catalog, schema, table_name)
     try:
-        sqlstring = (
-            f"CREATE OR REPLACE TABLE {target_catalog}.{schema}.{table_name} "
-            f"DEEP CLONE {source_catalog}.{schema}.{table_name}"
-        )
+        target = qualified_identifier(target_catalog, schema, table_name)
+        source = qualified_identifier(source_catalog, schema, table_name)
+        sqlstring = f"CREATE OR REPLACE TABLE {target} DEEP CLONE {source}"
 
         execute_statement_sync(w, warehouse, sqlstring, backoff=response_backoff)
 
@@ -103,8 +103,8 @@ def clone_table(w, source_catalog, target_catalog, schema, table_name, warehouse
 write_results = False  # set to true to write status df to disk
 
 # create the WorkspaceClients for source and target workspaces
-w_source = WorkspaceClient(host=source_host, token=source_pat)
-w_target = WorkspaceClient(host=target_host, token=target_pat)
+w_source = create_client(host=source_host, token=source_pat, profile=config.source_profile)
+w_target = create_client(host=target_host, token=target_pat, profile=config.target_profile)
 
 # create the secondary metastore as a recipient
 try:
@@ -115,40 +115,37 @@ try:
         data_recipient_global_metastore_id=metastore_id,
     )
 except BadRequest:
-
     try:
-        recipient = [
+        recipient = next(
             r
             for r in w_source.recipients.list()
             if r.data_recipient_global_metastore_id == metastore_id
-        ][0]
-        logger.info(
-            "Recipient with id %s already exists. Skipping creation...", metastore_id
         )
-    except IndexError:
+        logger.info("Recipient with id %s already exists. Skipping creation...", metastore_id)
+    except StopIteration as exc:
         raise RuntimeError(
             f"Recipient with id {metastore_id} does not exist in source workspace. Please validate the id and create it manually."
-        )
+        ) from exc
 
 # get all tables in the primary metastore
 system_info = spark.sql("SELECT * FROM system.information_schema.tables")
 
 # get local metastore id
-local_metastore_id = [
+local_metastore_id = next(
     r["current_metastore()"] for r in spark.sql("SELECT current_metastore()").collect()
-][0]
+)
 
 # get remote provider name; it may or may not be the same as local_metastore_id
 try:
-    remote_provider_name = [
+    remote_provider_name = next(
         p.name
         for p in w_target.providers.list()
         if p.data_provider_global_metastore_id == local_metastore_id
-    ][0]
-except IndexError:
+    )
+except StopIteration as exc:
     raise RuntimeError(
         "Provider could not be found in target workspace; please check that it was created."
-    )
+    ) from exc
 
 # initalize df lists
 cloned_table_names = []
@@ -181,16 +178,14 @@ if config.dry_run:
         )
         for schema in unique_schemas:
             logger.info("[DRY RUN] Would add schema %s.%s to share", cat, schema)
-        logger.info(
-            "[DRY RUN] Would create shared catalog %s_share in target workspace", cat
-        )
+        logger.info("[DRY RUN] Would create shared catalog %s_share in target workspace", cat)
         logger.info(
             "[DRY RUN] Would clone %d tables from %s_share to %s",
             len(all_tables),
             cat,
             cat,
         )
-        for schema, table_name in zip(all_schemas, all_tables):
+        for schema, table_name in zip(all_schemas, all_tables, strict=False):
             logger.info(
                 "[DRY RUN] Would clone table %s_share.%s.%s to %s.%s.%s",
                 cat,
@@ -232,11 +227,7 @@ else:
             try:
                 _ = w_source.shares.update_permissions(
                     share_name,
-                    changes=[
-                        PermissionsChange(
-                            add=[Privilege.SELECT], principal=recipient.name
-                        )
-                    ],
+                    changes=[PermissionsChange(add=[Privilege.SELECT], principal=recipient.name)],
                 )
             except BadRequest:
                 logger.error("Could not update permissions for share %s.", share_name)
@@ -268,9 +259,7 @@ else:
                     share_name=share_name,
                 )
             except BadRequest:
-                logger.info(
-                    "Shared catalog %s_share already exists. Skipping creation.", cat
-                )
+                logger.info("Shared catalog %s_share already exists. Skipping creation.", cat)
 
             with ThreadPoolExecutor(max_workers=num_exec) as executor:
                 threads = executor.map(
@@ -318,22 +307,3 @@ else:
                 .format("delta")
                 .save(f"{landing_zone_url}/sync_status_{ts2}")
             )
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Sync tables via Delta Sharing to secondary Databricks workspace"
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show planned operations without executing",
-    )
-    parser.add_argument(
-        "--log-level",
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Set logging level",
-    )
-    args = parser.parse_args()
-    config.dry_run = args.dry_run
-    logger = setup_logging(level=args.log_level)

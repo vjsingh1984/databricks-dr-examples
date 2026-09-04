@@ -15,20 +15,20 @@
 # Currently, we use PAT-based auth for the WorkspaceClient objects, so you must provide the host and token manually for
 # each workspace. You can update this to use other auth methods if desired.
 
-import argparse
-import os
 from concurrent.futures import ThreadPoolExecutor
-from databricks.sdk import WorkspaceClient
-from dr_sync.csv_mapping import load_mapping
-from dr_sync.config import DRSyncConfig
-from dr_sync.log import setup_logging
 
-config = (
-    DRSyncConfig.from_env()
-    if os.environ.get("DR_SYNC_SOURCE_HOST")
-    else DRSyncConfig.from_common_module()
+from dr_sync.cli import configure_runtime
+from dr_sync.config import DRSyncConfig
+from dr_sync.csv_mapping import load_mapping
+from dr_sync.log import setup_logging
+from dr_sync.workspace import create_client
+
+config = DRSyncConfig.load()
+logger = (
+    configure_runtime(config, "Sync catalogs and schemas between workspaces")
+    if __name__ == "__main__"
+    else setup_logging()
 )
-logger = setup_logging()
 target_host = config.target_host
 target_pat = config.target_token
 source_host = config.source_host
@@ -39,8 +39,8 @@ schema_mapping_file = config.schema_mapping_file
 
 
 # create WorkspaceClient objects
-w_source = WorkspaceClient(host=source_host, token=source_pat)
-w_target = WorkspaceClient(host=target_host, token=target_pat)
+w_source = create_client(host=source_host, token=source_pat, profile=config.source_profile)
+w_target = create_client(host=target_host, token=target_pat, profile=config.target_profile)
 
 # get source and target catalogs
 source_catalogs = [x for x in w_source.catalogs.list() if x.name in catalogs_to_copy]
@@ -79,9 +79,7 @@ for catalog in catalogs_to_create:
     # get target storage root based off of catalog name
     row = catalog_lookup.get(catalog_name)
     if row is None:
-        logger.error(
-            "Could not create catalog %s. Please check mapping file.", catalog_name
-        )
+        logger.error("Could not create catalog %s. Please check mapping file.", catalog_name)
         continue
     storage_root = row["target_storage_root"]
 
@@ -146,8 +144,8 @@ def create_schema(catalog_name, schema_obj, storage_root):
 # Collect all schema creation tasks across catalogs
 schema_tasks = []
 for cat in source_catalogs:
-    source_schemas = [x for x in w_source.schemas.list(cat.name)]
-    target_schemas = [x for x in w_target.schemas.list(cat.name)]
+    source_schemas = list(w_source.schemas.list(cat.name))
+    target_schemas = list(w_target.schemas.list(cat.name))
     source_schema_names = [x.name for x in source_schemas]
     target_schema_names = [x.name for x in target_schemas]
     schema_diff = list(set(source_schema_names) - set(target_schema_names))
@@ -178,22 +176,3 @@ if schema_tasks:
     storage_roots = [t[2] for t in schema_tasks]
     with ThreadPoolExecutor(max_workers=config.num_exec) as executor:
         list(executor.map(create_schema, catalog_names, schema_objs, storage_roots))
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Sync catalogs and schemas between workspaces"
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show planned operations without executing",
-    )
-    parser.add_argument(
-        "--log-level",
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Set logging level",
-    )
-    args = parser.parse_args()
-    config.dry_run = args.dry_run
-    logger = setup_logging(level=args.log_level)
